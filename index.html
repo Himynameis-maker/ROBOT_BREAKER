@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Robot Breaker（PC / iPhone）</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 10px;
+      background: #12151c;
+      color: #eef1f6;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      overscroll-behavior: none;
+    }
+    .topbar {
+      width: 100%;
+      max-width: 580px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .stage-pill {
+      background: #1b2232;
+      border: 1px solid #32405c;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 0.86rem;
+      font-weight: bold;
+      letter-spacing: 0.05em;
+      color: #eef1f6;
+    }
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    button, select, a.link-btn {
+      background: #283042;
+      color: #eef1f6;
+      border: 1px solid #3c4863;
+      border-radius: 8px;
+      padding: 7px 10px;
+      font-size: 0.84rem;
+      text-decoration: none;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    button.active { background: #2f6fed; border-color: #5b90ff; }
+    .dev-panel {
+      width: 100%;
+      max-width: 580px;
+      background: #171c26;
+      border: 1px solid #2e384e;
+      border-radius: 10px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .dev-panel.hidden {
+      display: none;
+    }
+    .screen-wrap {
+      width: 100%;
+      max-width: 512px;
+      background: #000;
+      border: 2px solid #2c3548;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .screen-wrap.scroll-x {
+      overflow-x: auto;
+      max-width: 100%;
+    }
+    canvas#gameCanvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    .controls-area {
+      width: 100%;
+      max-width: 580px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 4px 12px;
+    }
+    .stick-base {
+      position: relative;
+      width: 132px;
+      height: 132px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #252c3b 0%, #191e29 72%);
+      border: 2px solid #44516e;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      flex-shrink: 0;
+    }
+    .stick-cross-h, .stick-cross-v {
+      position: absolute;
+      background: rgba(255, 255, 255, 0.08);
+      pointer-events: none;
+    }
+    .stick-cross-h { left: 16px; right: 16px; top: 50%; height: 2px; margin-top: -1px; }
+    .stick-cross-v { top: 16px; bottom: 16px; left: 50%; width: 2px; margin-left: -1px; }
+    .stick-knob {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 54px;
+      height: 54px;
+      margin-left: -27px;
+      margin-top: -27px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #6a8cff, #2f57c8);
+      border: 2px solid #9ab4ff;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
+      pointer-events: none;
+    }
+    .action-btn {
+      width: 88px;
+      height: 88px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #ff6b5b, #b8281c);
+      border: 3px solid #ffa498;
+      color: #fff;
+      font-weight: bold;
+      font-size: 0.85rem;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      flex-shrink: 0;
+      padding: 0;
+    }
+    .action-btn.pressed {
+      transform: scale(0.93);
+      background: radial-gradient(circle at 35% 35%, #ff9587, #d63527);
+    }
+    .hud {
+      width: 100%;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.75rem;
+      background: #121620;
+      border: 1px solid #2d3548;
+      border-radius: 8px;
+      padding: 8px 10px;
+      line-height: 1.45;
+      white-space: pre;
+      overflow-x: auto;
+    }
+    .hint {
+      width: 100%;
+      font-size: 0.76rem;
+      color: #9ba7be;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div id="stageBadge" class="stage-pill">STAGE 1</div>
+    <div class="btn-row">
+      <button id="resetBtn" type="button">リセット</button>
+      <button id="devToggleBtn" type="button" aria-expanded="false">開発</button>
+    </div>
+  </div>
+
+  <div id="devPanel" class="dev-panel hidden">
+    <div class="btn-row">
+      <select id="modeSelect" aria-label="モード選択">
+        <option value="normal">通常モード（制作50面）</option>
+        <option value="test">テスト用（10面）</option>
+      </select>
+      <select id="stageSelect" aria-label="ステージ選択"></select>
+      <select id="timedBombSecSelect" aria-label="時限爆弾秒数設定">
+        <option value="">時限爆弾: ステージ設定</option>
+        <option value="60">時限爆弾: 全60s (12時)</option>
+        <option value="45">時限爆弾: 全45s (9時)</option>
+        <option value="30">時限爆弾: 全30s (6時)</option>
+        <option value="15">時限爆弾: 全15s (3時)</option>
+      </select>
+      <select id="zoomSelect" aria-label="表示サイズ">
+        <option value="fit">画面幅フィット</option>
+        <option value="2x">等倍2x (1dot=2px)</option>
+        <option value="1x">等倍1x (1dot=1px)</option>
+      </select>
+      <button id="pauseBtn" type="button">一時停止</button>
+      <button id="stepBtn" type="button">+1F</button>
+      <a class="link-btn" href="./editor.html">ステージエディタ</a>
+    </div>
+    <div id="hud" class="hud">読み込み中...</div>
+    <div class="hint">
+      操作: 擬似スティック ＋ HAMMERボタン（iPhone/マウス） / 矢印・WASD ＋ Space・Z・J（PC）
+    </div>
+  </div>
+
+  <div id="screenWrap" class="screen-wrap">
+    <canvas id="gameCanvas" width="256" height="240"></canvas>
+  </div>
+
+  <div class="controls-area">
+    <div id="stickBase" class="stick-base" aria-label="擬似スティック">
+      <div class="stick-cross-h"></div>
+      <div class="stick-cross-v"></div>
+      <div id="stickKnob" class="stick-knob"></div>
+    </div>
+    <button id="hammerBtn" class="action-btn" type="button" aria-label="ハンマー">HAMMER</button>
+  </div>
+
+  <script src="./src/constants.js"></script>
+  <script src="./src/actor_stepper.js"></script>
+  <script src="./src/hunter_ai.js"></script>
+  <script src="./src/enemy_ai.js"></script>
+  <script src="./src/game_world.js"></script>
+  <script src="./data/sprites.js"></script>
+  <script src="./src/renderer.js"></script>
+  <script src="./src/render_tiles.js"></script>
+  <script src="./src/render_actors.js"></script>
+  <script src="./src/render_enemies.js"></script>
+  <script src="./src/char_player.js"></script>
+  <script src="./src/char_hunter.js"></script>
+  <script src="./src/char_drone.js"></script>
+  <script src="./src/char_crawler.js"></script>
+  <script src="./src/char_orb.js"></script>
+  <script src="./data/stages.js"></script>
+  <script src="./data/stages_01_10.js"></script>
+  <script src="./data/stages_11_20.js"></script>
+  <script src="./data/stages_21_30.js"></script>
+  <script src="./data/stages_31_40.js"></script>
+  <script src="./data/stages_41_50.js"></script>
+  <script>
+    (function () {
+      const { RIGHT, LEFT, DOWN, UP, HAMMER, GameWorld } = window.BreakerGame;
+      const { Renderer } = window.BreakerRender;
+      const { STAGES } = window.BreakerStages || { STAGES: {} };
+      const NORMAL_STAGES = window.BreakerNormalStages || {};
+
+      const TEST_STAGE_LABELS = {
+        sandLadderDemo: "STAGE 1: 砂嵐ハシゴテスト（20×8）",
+        timedBombDemo: "STAGE 2: 時限爆弾テスト（20×8）",
+        enemyDemo: "STAGE 3: 敵・電磁球テスト（20×8）",
+        doorDemo: "STAGE 4: ドア＆爆弾連動テスト（20×8）",
+        pillarDemo: "STAGE 5: 鉄柱＆落下テスト（20×8）",
+        hammerDemo: "STAGE 6: ハンマー＆破壊テスト（20×8）",
+        standard8: "STAGE 7: 標準20×8（穴・ドラム缶・連続はしご）",
+        wide10: "STAGE 8: 拡大24×10（マップ拡大テスト）",
+        compact6: "STAGE 9: 小型16×6（狭小テスト）",
+        u6: "STAGE 10: U6 基準（20×6・はしご1本）"
+      };
+
+      const canvas = document.getElementById("gameCanvas");
+      const screenWrap = document.getElementById("screenWrap");
+      const renderer = new Renderer(canvas, { viewHeight: 240 });
+      const stageBadge = document.getElementById("stageBadge");
+      const devToggleBtn = document.getElementById("devToggleBtn");
+      const devPanel = document.getElementById("devPanel");
+      const modeSelect = document.getElementById("modeSelect");
+      const stageSelect = document.getElementById("stageSelect");
+      const timedBombSecSelect = document.getElementById("timedBombSecSelect");
+      const zoomSelect = document.getElementById("zoomSelect");
+      const resetBtn = document.getElementById("resetBtn");
+      const pauseBtn = document.getElementById("pauseBtn");
+      const stepBtn = document.getElementById("stepBtn");
+      const hammerBtn = document.getElementById("hammerBtn");
+      const hudEl = document.getElementById("hud");
+      const stickBase = document.getElementById("stickBase");
+      const stickKnob = document.getElementById("stickKnob");
+
+      let world = null;
+      let paused = false;
+      let stickBits = 0;
+      let keyBits = 0;
+      let hammerBtnDown = false;
+      let activeEntries = [];
+
+      function getNormalEntries() {
+        const list = [];
+        for (let num = 1; num <= 50; num++) {
+          const cfg = NORMAL_STAGES[num] || NORMAL_STAGES[String(num)];
+          if (!cfg || typeof cfg !== "object") continue;
+          const sNum = cfg.stageNumber != null ? cfg.stageNumber : num;
+          const sizeTag = "（" + (cfg.cols || 16) + "×" + (cfg.rows || 8) + "）";
+          const nameTag = cfg.name ? (" " + cfg.name) : "";
+          list.push({
+            key: "n:" + num,
+            stageNumber: sNum,
+            label: "STAGE " + num + (nameTag ? (":" + nameTag) : "") + sizeTag,
+            cfg
+          });
+        }
+        return list;
+      }
+
+      function getTestEntries() {
+        const keys = Object.keys(STAGES);
+        return keys.map((k, idx) => {
+          const cfg = STAGES[k];
+          const sNum = cfg.stageNumber != null ? cfg.stageNumber : (idx + 1);
+          return {
+            key: "t:" + k,
+            stageNumber: sNum,
+            label: TEST_STAGE_LABELS[k] || ("STAGE " + sNum + ": " + k),
+            cfg
+          };
+        });
+      }
+
+      function rebuildStageSelect(preferredKey) {
+        const normalList = getNormalEntries();
+        const normalOpt = modeSelect.querySelector('option[value="normal"]');
+        if (normalOpt) {
+          if (normalList.length === 0) {
+            normalOpt.disabled = true;
+            normalOpt.textContent = "通常モード（未作成 0/50）";
+            if (modeSelect.value === "normal") {
+              modeSelect.value = "test";
+            }
+          } else {
+            normalOpt.disabled = false;
+            normalOpt.textContent = "通常モード（" + normalList.length + "/50面）";
+          }
+        }
+
+        activeEntries = modeSelect.value === "normal" && normalList.length > 0
+          ? normalList
+          : getTestEntries();
+
+        stageSelect.innerHTML = "";
+        activeEntries.forEach(entry => {
+          const opt = document.createElement("option");
+          opt.value = entry.key;
+          opt.textContent = entry.label;
+          stageSelect.appendChild(opt);
+        });
+
+        if (preferredKey && activeEntries.some(e => e.key === preferredKey)) {
+          stageSelect.value = preferredKey;
+        } else if (activeEntries.length > 0) {
+          stageSelect.selectedIndex = 0;
+        }
+      }
+
+      function updateTopBadge() {
+        if (!world) return;
+        stageBadge.textContent = "STAGE " + world.stageNumber + (paused ? " [PAUSE]" : "");
+      }
+
+      function applyZoomMode() {
+        if (!world) return;
+        const mode = zoomSelect.value;
+        screenWrap.classList.remove("scroll-x");
+        if (mode === "1x") {
+          screenWrap.style.maxWidth = world.worldWidth + "px";
+          canvas.style.width = world.worldWidth + "px";
+          screenWrap.classList.add("scroll-x");
+        } else if (mode === "2x") {
+          const w2 = world.worldWidth * 2;
+          screenWrap.style.maxWidth = w2 + "px";
+          canvas.style.width = w2 + "px";
+          screenWrap.classList.add("scroll-x");
+        } else {
+          screenWrap.style.maxWidth = Math.max(512, world.worldWidth * 2) + "px";
+          canvas.style.width = "100%";
+        }
+      }
+
+      function createStage() {
+        const selected = activeEntries.find(e => e.key === stageSelect.value) || activeEntries[0];
+        if (!selected) return;
+        const cfg = selected.cfg;
+        const stageNumber = selected.stageNumber;
+        const tbVal = Number(timedBombSecSelect.value);
+        const timedBombOverrideSec = (tbVal === 15 || tbVal === 30 || tbVal === 45 || tbVal === 60) ? tbVal : null;
+        world = new GameWorld({
+          stageNumber,
+          cols: cfg.cols,
+          rows: cfg.rows,
+          tiles: cfg.tiles,
+          timedBombs: cfg.timedBombs,
+          timedBombSec: cfg.timedBombSec,
+          timedBombOverrideSec,
+          player: cfg.player,
+          hunter: cfg.hunter,
+          enemies: cfg.enemies,
+          orb: cfg.orb,
+          orbFast: cfg.orbFast
+        });
+        world.player.prevHammer = (currentBits() & HAMMER) !== 0;
+        updateTopBadge();
+        applyZoomMode();
+        renderer.resetCamera(world);
+        renderNow();
+      }
+
+      function advanceToNextStage() {
+        const opts = stageSelect.options;
+        if (opts && opts.length > 0) {
+          stageSelect.selectedIndex = (stageSelect.selectedIndex + 1) % opts.length;
+        }
+        createStage();
+      }
+
+      function currentBits() {
+        let b = stickBits | keyBits | (hammerBtnDown ? HAMMER : 0);
+        if ((b & (LEFT | RIGHT)) === (LEFT | RIGHT)) {
+          b &= ~(LEFT | RIGHT);
+        }
+        if ((b & (UP | DOWN)) === (UP | DOWN)) {
+          b &= ~(UP | DOWN);
+        }
+        return b;
+      }
+
+      function stepOneFrame() {
+        world.step(currentBits());
+        if (world.deathFinished || world.tryAgainFinished) {
+          createStage();
+          return true;
+        }
+        if (world.clearFinished) {
+          advanceToNextStage();
+          return true;
+        }
+        return false;
+      }
+
+      function dirLabel(b) {
+        const out = [];
+        if (b & UP) out.push("U");
+        if (b & DOWN) out.push("D");
+        if (b & LEFT) out.push("L");
+        if (b & RIGHT) out.push("R");
+        if (b & HAMMER) out.push("H");
+        return out.length ? out.join("") : "-";
+      }
+
+      function actorTag(a) {
+        if (!a) return "";
+        if (a.state === 15 || a.state === 16) return " [TRAPPED!]";
+        if (a.flag & 2) return " [DRUM]";
+        return "";
+      }
+
+      function enemyKindTag(e) {
+        let tag = "dr";
+        if (e.enemyType === "crawler") tag = "cr";
+        else if (e.enemyType === "droneFast") tag = "drF";
+        return e.isBack ? (tag + "/B") : tag;
+      }
+
+      function orbLabel(ob, w) {
+        if (!ob) return "ORB:OFF";
+        const stopTag = w.allBackStop ? " [STOP]" : "";
+        if (ob.state === 0) {
+          return "ORB st:0(出現準備)" + stopTag;
+        }
+        if (ob.state === 1) {
+          return "ORB st:1(発生中) rem:" + ob.spawnTimer + "F X:" + ob.x + " Y:" + ob.y + " dir:" + (ob.dir & LEFT ? "L" : "R") + stopTag;
+        }
+        if (ob.state === 2) {
+          return "ORB st:2(飛行中) X:" + ob.x + " Y:" + ob.y + " dir:" + (ob.dir & LEFT ? "L" : "R") + stopTag;
+        }
+        if (!ob.disappearDone) {
+          return "ORB st:3(消滅中) stage:" + ob.animStage + stopTag;
+        }
+        const remF = Math.max(0, (ob.waitTimer - 1) * 8 + ((8 - (w.f & 7)) & 7));
+        return "ORB st:3(待機) wait:" + ob.waitTimer + " (" + remF + "F/" + (remF / 60).toFixed(1) + "s)" + stopTag;
+      }
+
+      function timedBombLabel(tb, w) {
+        const sec = (tb.remainFrames / 60).toFixed(1);
+        const step = Math.ceil(Math.max(1, tb.remainFrames) / 300) % 12;
+        const clock = step === 0 ? 12 : step;
+        const blinkTag = (tb.remainFrames <= 600 && (Math.floor((600 - tb.remainFrames) / 30) % 2 === 0)) ? "*" : "";
+        const fallTag = tb.falling ? "F" : "";
+        const stopTag = w.allBackStop ? "[STOP]" : "";
+        return "(" + tb.row + "," + tb.col + "):" + sec + "s/" + clock + "時" + blinkTag + fallTag + stopTag;
+      }
+
+      function renderNow() {
+        renderer.draw(world);
+        updateTopBadge();
+        const p = world.player;
+        const h = world.hunter;
+        const ai = world.hunterAI;
+        const inp = currentBits();
+        const rem = world.countBreakables();
+        const doorTotal = world.doors ? world.doors.length : 0;
+        const doorOpen = world.doors ? world.doors.filter(d => d.state >= 2).length : 0;
+        const playerHitLabel = world.playerDead
+          ? (" [DEAD:" + (world.playerHitOrb ? "ORB" : "ENEMY") + " ph:" + world.deathPhase + "]")
+          : (world.tryAgainActive
+            ? (" [TRY-AGAIN ph:" + world.tryAgainPhase + " " + (world.tryAgainTimer / 60).toFixed(1) + "s]")
+            : (world.playerHitOrb ? " [ORB!]" : (world.playerHitEnemy ? " [HIT!]" : "")));
+        const introTag = world.introActive
+          ? (" [INTRO " + (world.introFrame / 60).toFixed(1) + "s]")
+          : (world.startBannerTimer > 0 ? " [START!]" : "");
+        const clearTag = world.clearPhase === 1
+          ? (" [CLR-POST " + ((36 - world.clearTimer) / 60).toFixed(2) + "s]")
+          : (world.clearPhase === 2 ? (" [CLEAR! " + ((180 - world.clearTimer) / 60).toFixed(1) + "s]") : "");
+        const hunterLine = h
+          ? ("Hunter st:" + h.state + " X:" + h.x + " Y:" + h.y + " (" + h.row + "," + h.col + ") f:" + (h.facing & 2 ? "L" : "R") + actorTag(h))
+          : "Hunter: NONE";
+        const aiLine = h
+          ? ("AI     bits:" + dirLabel(h.bits) + "(" + h.bits + ") dirMem:" + ai.lastPlayerDir + " timer:" + ai.timer)
+          : "AI     OFF";
+        hudEl.textContent =
+          "STAGE:" + world.stageNumber + " MAP:" + world.cols + "x" + world.rows + " F:" + world.f + " TGT:" + rem + " DR:" + doorOpen + "/" + doorTotal + " IN:" + dirLabel(inp) + (paused ? " [PAUSE]" : "") + introTag + clearTag + "\n" +
+          "Player st:" + p.state + " X:" + p.x + " Y:" + Math.round(p.y) + " (" + p.row + "," + p.col + ") f:" + (p.facing & 2 ? "L" : "R") + actorTag(p) + playerHitLabel + "\n" +
+          hunterLine + "\n" +
+          aiLine + " | " + orbLabel(world.orb, world);
+        if (world.timedBombs && world.timedBombs.length > 0) {
+          hudEl.textContent += "\nTB: " + world.timedBombs.map(tb => timedBombLabel(tb, world)).join(" | ");
+        }
+        if (world.enemies && world.enemies.length > 0) {
+          hudEl.textContent += "\n" + world.enemies.map((e, idx) =>
+            "E" + idx + "(" + enemyKindTag(e) + ") st:" + e.state + " X:" + e.x + " Y:" + e.y + " (" + e.row + "," + e.col + ") f:" + (e.facing & 2 ? "L" : "R") + actorTag(e)
+          ).join(" | ");
+        }
+      }
+
+      // 擬似スティック（4方向優先・デッドゾーン付き）
+      let activePointerId = null;
+      const MAX_R = 40;
+      const DEAD_R = 13;
+
+      function updateStickFromPoint(clientX, clientY) {
+        const rect = stickBase.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        let dx = clientX - cx;
+        let dy = clientY - cy;
+        const dist = Math.hypot(dx, dy);
+        if (dist > MAX_R) {
+          dx = (dx / dist) * MAX_R;
+          dy = (dy / dist) * MAX_R;
+        }
+        stickKnob.style.transform = "translate(" + dx.toFixed(1) + "px, " + dy.toFixed(1) + "px)";
+
+        if (dist < DEAD_R) {
+          stickBits = 0;
+        } else if (Math.abs(dx) >= Math.abs(dy)) {
+          stickBits = dx > 0 ? RIGHT : LEFT;
+        } else {
+          stickBits = dy > 0 ? DOWN : UP;
+        }
+      }
+
+      function resetStick() {
+        activePointerId = null;
+        stickBits = 0;
+        stickKnob.style.transform = "translate(0px, 0px)";
+      }
+
+      stickBase.addEventListener("pointerdown", function (e) {
+        e.preventDefault();
+        activePointerId = e.pointerId;
+        if (stickBase.setPointerCapture) {
+          try { stickBase.setPointerCapture(e.pointerId); } catch (_) {}
+        }
+        updateStickFromPoint(e.clientX, e.clientY);
+      });
+
+      stickBase.addEventListener("pointermove", function (e) {
+        if (e.pointerId !== activePointerId) return;
+        e.preventDefault();
+        updateStickFromPoint(e.clientX, e.clientY);
+      });
+
+      stickBase.addEventListener("pointerup", function (e) {
+        if (e.pointerId === activePointerId) resetStick();
+      });
+      stickBase.addEventListener("pointercancel", function (e) {
+        if (e.pointerId === activePointerId) resetStick();
+      });
+
+      // ハンマーボタン（マルチタッチ対応）
+      let hammerPointerId = null;
+      function setHammerPressed(on) {
+        hammerBtnDown = on;
+        hammerBtn.classList.toggle("pressed", on);
+      }
+
+      hammerBtn.addEventListener("pointerdown", function (e) {
+        e.preventDefault();
+        hammerPointerId = e.pointerId;
+        if (hammerBtn.setPointerCapture) {
+          try { hammerBtn.setPointerCapture(e.pointerId); } catch (_) {}
+        }
+        setHammerPressed(true);
+      });
+      hammerBtn.addEventListener("pointerup", function (e) {
+        if (e.pointerId === hammerPointerId) {
+          hammerPointerId = null;
+          setHammerPressed(false);
+        }
+      });
+      hammerBtn.addEventListener("pointercancel", function (e) {
+        if (e.pointerId === hammerPointerId) {
+          hammerPointerId = null;
+          setHammerPressed(false);
+        }
+      });
+
+      // PC キーボード
+      const KEY_MAP = {
+        ArrowUp: UP, KeyW: UP,
+        ArrowDown: DOWN, KeyS: DOWN,
+        ArrowLeft: LEFT, KeyA: LEFT,
+        ArrowRight: RIGHT, KeyD: RIGHT,
+        Space: HAMMER, KeyZ: HAMMER, KeyJ: HAMMER
+      };
+      const pressedKeys = new Set();
+
+      function recomputeKeys() {
+        let b = 0;
+        for (const code of pressedKeys) {
+          b |= KEY_MAP[code] || 0;
+        }
+        keyBits = b;
+      }
+
+      window.addEventListener("keydown", function (e) {
+        if (KEY_MAP[e.code]) {
+          e.preventDefault();
+          pressedKeys.add(e.code);
+          recomputeKeys();
+        }
+      });
+
+      window.addEventListener("keyup", function (e) {
+        if (KEY_MAP[e.code]) {
+          pressedKeys.delete(e.code);
+          recomputeKeys();
+        }
+      });
+
+      window.addEventListener("blur", function () {
+        pressedKeys.clear();
+        recomputeKeys();
+        resetStick();
+        hammerPointerId = null;
+        setHammerPressed(false);
+      });
+
+      devToggleBtn.addEventListener("click", function () {
+        const isOpen = devPanel.classList.toggle("hidden") === false;
+        devToggleBtn.classList.toggle("active", isOpen);
+        devToggleBtn.setAttribute("aria-expanded", String(isOpen));
+        devToggleBtn.blur();
+      });
+
+      modeSelect.addEventListener("change", function () {
+        rebuildStageSelect();
+        createStage();
+        modeSelect.blur();
+      });
+      stageSelect.addEventListener("change", function () {
+        createStage();
+        stageSelect.blur();
+      });
+      timedBombSecSelect.addEventListener("change", function () {
+        createStage();
+        timedBombSecSelect.blur();
+      });
+      zoomSelect.addEventListener("change", function () {
+        applyZoomMode();
+        zoomSelect.blur();
+      });
+      resetBtn.addEventListener("click", function () {
+        createStage();
+        resetBtn.blur();
+      });
+
+      pauseBtn.addEventListener("click", function () {
+        paused = !paused;
+        pauseBtn.classList.toggle("active", paused);
+        pauseBtn.textContent = paused ? "再開" : "一時停止";
+        renderNow();
+        pauseBtn.blur();
+      });
+
+      stepBtn.addEventListener("click", function () {
+        if (!paused) {
+          paused = true;
+          pauseBtn.classList.add("active");
+          pauseBtn.textContent = "再開";
+        }
+        stepOneFrame();
+        renderNow();
+        stepBtn.blur();
+      });
+
+      // 固定60fpsループ
+      const STEP_MS = 1000 / 60;
+      let lastTime = performance.now();
+      let acc = 0;
+
+      function loop(now) {
+        const dt = Math.min(100, now - lastTime);
+        lastTime = now;
+        if (!paused) {
+          acc += dt;
+          while (acc >= STEP_MS) {
+            const restarted = stepOneFrame();
+            acc -= STEP_MS;
+            if (restarted) {
+              acc = 0;
+              break;
+            }
+          }
+          renderNow();
+        }
+        requestAnimationFrame(loop);
+      }
+
+      rebuildStageSelect();
+      createStage();
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>
