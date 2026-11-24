@@ -14,6 +14,8 @@
     HOLE: 0x09,
     HOLE_FALLING: 0x0c,
     DRUM_FALLING: 0x0d,
+    KEY: 0x0e,
+    SHOE_POD: 0x0f,
     DOOR_OPENING_2: 0x62,
     DOOR_OPENING_1: 0x63,
     WALL_1: 0xc1,
@@ -829,6 +831,32 @@
           ctx.fillRect(cx + 2 + t * 0.5, cy - 4 + t * 0.9, 3, 3);
           ctx.fillRect(cx - 5 - t * 0.3, cy + 2 + t * 1.1, 3, 3);
           ctx.fillRect(cx + 3 + t * 0.4, cy + 1 + t * 1.0, 3, 3);
+        }
+      }
+
+      // 鍵・シューズ取得キラキラエフェクト
+      if (world.pickupEffects) {
+        for (const pe of world.pickupEffects) {
+          const t = pe.maxTimer - pe.timer;
+          const cx = pe.col * 16 + 8;
+          const cy = pe.row * 32 + 18;
+          const spread = 2 + Math.round(t * 0.6);
+          if (pe.kind === "shoe") {
+            ctx.fillStyle = (t & 2) ? "#ffffff" : "#48f4ff";
+            ctx.fillRect(cx - spread, cy - spread, 2, 2);
+            ctx.fillRect(cx + spread - 1, cy - spread, 2, 2);
+            ctx.fillRect(cx - spread, cy + spread - 1, 2, 2);
+            ctx.fillRect(cx + spread - 1, cy + spread - 1, 2, 2);
+            ctx.fillStyle = (t & 1) ? "#ff9830" : "#fff070";
+            ctx.fillRect(cx - 1, cy - spread - 1, 2, 2);
+            ctx.fillRect(cx - 1, cy + spread, 2, 2);
+          } else {
+            ctx.fillStyle = (t & 2) ? "#ffffff" : "#44d8ff";
+            ctx.fillRect(cx - spread, cy - 1, 2, 2);
+            ctx.fillRect(cx + spread - 1, cy - 1, 2, 2);
+            ctx.fillRect(cx - 1, cy - spread, 2, 2);
+            ctx.fillRect(cx - 1, cy + spread - 1, 2, 2);
+          }
         }
       }
 
