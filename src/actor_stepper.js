@@ -1,4 +1,4 @@
-(function (root) {
+ (function (root) {
   "use strict";
 
   const G = (typeof module !== "undefined" && module.exports && !root.BreakerGame)
@@ -50,6 +50,8 @@
       this.isGolden = false;
       this.prevHammer = false;
       this.stunTimer = 0;
+      this.hasFlyingShoes = false;
+      this.shoeHoverTimer = 0;
     }
   }
 
@@ -65,6 +67,16 @@
         return false;
       }
       return isLadderTile(t);
+    }
+
+    isPlayerShoeHole(slot, world) {
+      if (!slot.isPlayer || !slot.hasFlyingShoes) return false;
+      if (slot.row >= world.rows - 1) return false;
+      if (slot.flag & 2) return false;
+      const curTile = world.getTile(slot.row, slot.col);
+      const isSandCont = curTile === TILE.SAND_LADDER &&
+        world.getTile(slot.row + 1, slot.col) === TILE.SAND_LADDER;
+      return isFallHoleTile(curTile) || isSandCont;
     }
 
     updateCR(slot, world) {
@@ -117,6 +129,7 @@
       slot.hammerTimer = 0;
       slot.hammerHitDone = false;
       slot.stunTimer = 0;
+      slot.shoeHoverTimer = 0;
     }
 
     // 落下中ドラム缶による閉じ込め捕獲＆隣セルはみ出し押し戻し
@@ -124,7 +137,7 @@
       if (slot.isPlayer && world.stageCleared) {
         return false;
       }
-      if (slot.state !== 0 && slot.state !== 1 && slot.state !== 2 && slot.state !== 4) {
+      if (slot.state !== 0 && slot.state !== 1 && slot.state !== 2 && slot.state !== 4 && slot.state !== 12) {
         return false;
       }
       const curTile = world.getTile(slot.row, slot.col);
@@ -142,6 +155,7 @@
         slot.hammerTimer = 0;
         slot.hammerHitDone = false;
         slot.stunTimer = 0;
+        slot.shoeHoverTimer = 0;
         this.snapX(slot, world);
         this.snapY(slot);
         this.updateCR(slot, world);
@@ -288,7 +302,7 @@
       return true;
     }
 
-    tryEnterHole(slot, world) {
+    tryEnterHole(slot, world, allowShoes = false, advanceOnFly = false) {
       if (slot.row >= world.rows - 1) return false;
       if (slot.flag & 2) {
         if (isSolidDrum(world.getTile(slot.row + 1, slot.col))) return false;
@@ -303,12 +317,57 @@
       }
       if (((slot.x + 3) & 0x0f) >= 6) return false;
 
+      if (allowShoes && slot.isPlayer && slot.hasFlyingShoes && !(slot.flag & 2)) {
+        const rawHoriz = slot.bits & (LEFT | RIGHT);
+        const horiz = (rawHoriz === LEFT || rawHoriz === RIGHT) ? rawHoriz : 0;
+        if (horiz !== 0) {
+          if (advanceOnFly) {
+            if (this.isPlayerShoeHole(slot, world)) {
+              slot.dir = horiz;
+              slot.facing = horiz;
+              slot.prom = 0;
+              slot.state = 12;
+              slot.shoeHoverTimer = 0;
+              if (this.canPassWall(slot, horiz, world)) {
+                const stepX = (horiz & LEFT) ? -1 : 1;
+                slot.x = world.wrapX(slot.x + stepX);
+                this.updateCR(slot, world);
+                if (!this.isPlayerShoeHole(slot, world)) {
+                  slot.state = 1;
+                  slot.prom = 0;
+                  slot.shoeHoverTimer = 0;
+                }
+              }
+              return true;
+            }
+          } else if (((slot.y + 8) & 0x1f) <= 12) {
+            const savedY = slot.y;
+            const savedRow = slot.row;
+            const savedCol = slot.col;
+            this.snapY(slot);
+            this.updateCR(slot, world);
+            if (this.isPlayerShoeHole(slot, world)) {
+              slot.dir = horiz;
+              slot.facing = horiz;
+              slot.prom = 0;
+              slot.state = 12;
+              slot.shoeHoverTimer = 0;
+              return true;
+            }
+            slot.y = savedY;
+            slot.row = savedRow;
+            slot.col = savedCol;
+          }
+        }
+      }
+
       if (slot.isPlayer) {
         this.snapX(slot, world);
       }
       slot.prom = slot.isPlayer ? 0 : 0x12;
       slot.topY = slot.y;
       slot.state = 5;
+      slot.shoeHoverTimer = 0;
       return true;
     }
 
@@ -576,7 +635,7 @@
       } else if (slot.state === 1) {
         if (this.tryStartHammer(slot, b, world)) return;
         if (this.tryEnterLadder(slot, b, world)) return;
-        if (this.tryEnterHole(slot, world)) return;
+        if (this.tryEnterHole(slot, world, true, true)) return;
         if (this.trySideTransition(slot, b, world)) return;
         if (!this.canPassWall(slot, b, world)) {
           slot.state = 0;
@@ -589,6 +648,40 @@
         } else {
           slot.state = 0;
           slot.dir = (slot.dir + 1) & 0xff;
+        }
+      } else if (slot.state === 12) {
+        if (!this.isPlayerShoeHole(slot, world)) {
+          slot.shoeHoverTimer = 0;
+          slot.state = 1;
+          return;
+        }
+        const rawHoriz = b & (LEFT | RIGHT);
+        const horiz = (rawHoriz === LEFT || rawHoriz === RIGHT) ? rawHoriz : 0;
+        if (horiz !== 0) {
+          slot.shoeHoverTimer = 0;
+          slot.dir = horiz;
+          slot.facing = horiz;
+          if (this.canPassWall(slot, horiz, world)) {
+            const stepX = (horiz & LEFT) ? -1 : 1;
+            slot.x = world.wrapX(slot.x + stepX);
+            this.updateCR(slot, world);
+            if (!this.isPlayerShoeHole(slot, world)) {
+              slot.state = 1;
+              slot.prom = 0;
+              slot.shoeHoverTimer = 0;
+              return;
+            }
+          }
+        } else {
+          slot.shoeHoverTimer += 1;
+          if (slot.shoeHoverTimer > 18) {
+            this.snapX(slot, world);
+            slot.prom = 0;
+            slot.topY = slot.y;
+            slot.state = 5;
+            slot.shoeHoverTimer = 0;
+            return;
+          }
         }
       } else if (slot.state === 4) {
         const { totalFrames, hitFrame } = getHammerTiming(slot);
@@ -693,7 +786,7 @@
         slot.aux -= 1;
         if (slot.aux === 0) {
           slot.aux = 1;
-          this.tryEnterHole(slot, world);
+          this.tryEnterHole(slot, world, true, false);
         }
       } else if (slot.state === 9) {
         slot.x = world.wrapX(slot.x + (slot.dir === RIGHT ? 1 : -1));
