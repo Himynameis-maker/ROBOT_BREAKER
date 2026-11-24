@@ -459,6 +459,8 @@
         timedBomb: "#f0a030",
         door: "#369494",
         pillar: "#7d92b0",
+        key: "#2cd0ff",
+        shoePod: "#52e8c8",
         player: "#f2f6ff",
         hunter: "#b4bfd0",
         drone: "#f0d040",
@@ -1148,6 +1150,9 @@
         if (!playWorld) return;
         const rem = playWorld.countBreakables();
         let stText = "残り壊す対象: " + rem + "個 | F:" + playWorld.f;
+        if (playWorld.totalKeys > 0) stText += " | 鍵:" + playWorld.collectedKeys + "/" + playWorld.totalKeys;
+        if (playWorld.shoePodState === "opening") stText += " [筒開放中...]";
+        else if (playWorld.player.hasFlyingShoes) stText += " [空飛ぶ靴]";
         if (playWorld.stageCleared) stText += " [CLEAR!]";
         else if (playWorld.playerDead) stText += " [MISS]";
         else if (playWorld.tryAgainActive) stText += " [TRY AGAIN]";
