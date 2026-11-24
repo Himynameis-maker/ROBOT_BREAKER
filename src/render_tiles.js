@@ -20,6 +20,8 @@
     HOLE: 0x09,
     HOLE_FALLING: 0x0c,
     DRUM_FALLING: 0x0d,
+    KEY: 0x0e,
+    SHOE_POD: 0x0f,
     DOOR_OPENING_2: 0x62,
     DOOR_OPENING_1: 0x63,
     WALL_1: 0xc1,
@@ -54,6 +56,52 @@
     [[-1, 0], [-2, 0], [-3, 0], [-4, 0], [-5, 0]],
     [[-1, 0], [-2, -1], [-3, -1], [-4, -2]],
     [[0, -1], [-1, -2], [-1, -3], [-2, -4]]
+  ];
+
+  // 水色の鍵（9×14）
+  const KEY_PALETTE = {
+    O: "#0d2f52",
+    D: "#1678b8",
+    M: "#2cd0ff",
+    L: "#98f4ff",
+    W: "#ffffff"
+  };
+
+  const KEY_PATTERN = [
+    ".OOOOOO..",
+    "OLWWLLMO.",
+    "OLW..DMO.",
+    "OLM..DMO.",
+    "OLDDDDMO.",
+    ".OMDDMMO.",
+    "..OLDO...",
+    "..OLDOO..",
+    "..OLDMO..",
+    "..OLDOO..",
+    "..OLDMOO.",
+    "..OLDMMO.",
+    "..OLDDMO.",
+    "...OOOO.."
+  ];
+
+  // 空飛ぶシューズ（筒内浮遊アイコン：10×7）
+  const SHOE_ICON_PALETTE = {
+    K: "#0b1424",
+    W: "#f0f6ff",
+    S: "#9eb4cc",
+    C: "#30dcff",
+    O: "#ea7224",
+    N: "#435068"
+  };
+
+  const SHOE_ICON_PATTERN = [
+    ".KKKKK....",
+    ".KWWCOK...",
+    ".KWWSWK...",
+    ".KWWWWKK..",
+    ".KWWWCCWK.",
+    ".KSSSSSSK.",
+    ".KNNKNNKK."
   ];
 
   // 新3回壊せる壁（黒目の硬質ステンレスパネル）用パレット・ドット絵（16×24）
@@ -422,22 +470,25 @@
     return "drone";
   }
 
-  function bakeTile16x24(rows, palette) {
+  function bakeRectPattern(rows, palette, w, h) {
     const c = document.createElement("canvas");
-    c.width = 16;
-    c.height = 24;
+    c.width = w;
+    c.height = h;
     const g = c.getContext("2d");
-    for (let y = 0; y < 24; y++) {
+    for (let y = 0; y < h; y++) {
       const line = rows[y] || "";
-      for (let x = 0; x < 16; x++) {
-        const ch = line[x];
-        const color = palette[ch];
+      for (let x = 0; x < w; x++) {
+        const color = palette[line[x]];
         if (!color) continue;
         g.fillStyle = color;
         g.fillRect(x, y, 1, 1);
       }
     }
     return c;
+  }
+
+  function bakeTile16x24(rows, palette) {
+    return bakeRectPattern(rows, palette, 16, 24);
   }
 
   const R = root.BreakerRender;
@@ -500,6 +551,210 @@
 
       this.trappedDrumSprites[kind] = c;
       return c;
+    },
+
+    drawKey(ctx, x, yTop, frame) {
+      if (!this.keySprite) {
+        this.keySprite = bakeRectPattern(KEY_PATTERN, KEY_PALETTE, 9, 14);
+      }
+      const f = frame || 0;
+      const floatY = Math.round(Math.sin(f * 0.1) * 1.5);
+      const kx = x + 4;
+      const ky = yTop + 11 + floatY;
+
+      // 床上のほのかな水色反射影
+      ctx.fillStyle = "rgba(64, 216, 255, 0.28)";
+      ctx.fillRect(x + 6, yTop + 30, 4, 1);
+
+      ctx.drawImage(this.keySprite, kx, ky);
+
+      // 周期的な小さなキラッと光沢
+      const shine = f % 72;
+      if (shine < 8) {
+        ctx.fillStyle = "#ffffff";
+        if (shine < 4) {
+          ctx.fillRect(kx + 1, ky + 1, 2, 1);
+          ctx.fillRect(kx + 1, ky, 1, 3);
+        } else {
+          ctx.fillRect(kx + 2, ky + 2, 1, 1);
+        }
+      }
+    },
+
+    drawShoeIconWithFlame(ctx, sx, sy, hasFlame, frame) {
+      if (!this.shoeIconSprite) {
+        this.shoeIconSprite = bakeRectPattern(SHOE_ICON_PATTERN, SHOE_ICON_PALETTE, 10, 7);
+      }
+      ctx.drawImage(this.shoeIconSprite, sx, sy);
+      if (!hasFlame) return;
+
+      const phase = ((frame || 0) >> 1) & 1;
+      const drawNozzleFlame = (nx, alt) => {
+        const longF = (phase ^ alt) === 0;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(nx, sy + 7, 2, 1);
+        ctx.fillStyle = "#fff278";
+        ctx.fillRect(nx, sy + 8, 2, 1);
+        ctx.fillStyle = "#ff8420";
+        ctx.fillRect(nx, sy + 9, 1, 1);
+        ctx.fillStyle = "#ff4018";
+        ctx.fillRect(nx + (longF ? 0 : 1), sy + 9 + (longF ? 1 : 0), 1, longF ? 2 : 1);
+      };
+      drawNozzleFlame(sx + 2, 0);
+      drawNozzleFlame(sx + 5, 1);
+    },
+
+    drawShoePod(ctx, x, yTop, world) {
+      const f = world ? (world.f || 0) : 0;
+      const state = world && world.shoePodState ? world.shoePodState : "closed";
+      const remain = world ? (world.shoePodOpenTimer || 0) : 0;
+
+      // 0.0 (閉鎖) 〜 1.0 (全開) の開放率を計算（1.0秒=60F開くスプライト演出）
+      let openProgress = 0;
+      let phase = "closed";
+      if (state === "open") {
+        openProgress = 1;
+        phase = "open";
+      } else if (state === "opening") {
+        const elapsed = Math.max(0, Math.min(60, 60 - remain));
+        if (elapsed < 15) {
+          phase = "unlock";
+          openProgress = 0;
+        } else if (elapsed < 45) {
+          phase = "sliding";
+          openProgress = (elapsed - 15) / 30;
+        } else {
+          phase = "igniting";
+          openProgress = 1;
+        }
+      }
+
+      const isOpenEnough = openProgress >= 0.99;
+      const isLit = phase === "open" || phase === "igniting" || phase === "sliding";
+
+      // 1. 背面円柱フレームと内部バックライト
+      ctx.fillStyle = "#0b111e";
+      ctx.fillRect(x + 2, yTop + 11, 12, 17);
+
+      // 背面サイドの金属支柱
+      ctx.fillStyle = "#2b384e";
+      ctx.fillRect(x + 1, yTop + 10, 1, 19);
+      ctx.fillRect(x + 14, yTop + 10, 1, 19);
+      ctx.fillStyle = "#485e80";
+      ctx.fillRect(x + 2, yTop + 11, 1, 17);
+      ctx.fillRect(x + 13, yTop + 11, 1, 17);
+
+      // 内側のホログラム背景光（開くと明るく点灯）
+      ctx.fillStyle = isLit ? "rgba(44, 214, 255, 0.20)" : "rgba(32, 110, 160, 0.14)";
+      ctx.fillRect(x + 4, yTop + 12, 8, 15);
+      if (isLit) {
+        // 台座からの浮遊リフタービーム
+        ctx.fillStyle = "rgba(110, 240, 255, 0.28)";
+        ctx.fillRect(x + 5, yTop + 23, 6, 5);
+      }
+
+      // 2. 内部の空飛ぶシューズ（開放時は上下浮遊＆足裏から炎）
+      let shoeY = yTop + 17;
+      let showFlame = false;
+      if (phase === "open") {
+        shoeY = yTop + 15 + Math.round(Math.sin(f * 0.14) * 1.5);
+        showFlame = true;
+      } else if (phase === "igniting") {
+        const t = Math.max(0, 60 - remain - 45); // 0..14
+        shoeY = yTop + 16 - (t >= 7 ? 1 : 0);
+        showFlame = t >= 3;
+      } else if (phase === "sliding") {
+        shoeY = yTop + 17 - (openProgress >= 0.5 ? 1 : 0);
+        showFlame = openProgress >= 0.85;
+      }
+      this.drawShoeIconWithFlame(ctx, x + 3, shoeY, showFlame, f);
+
+      // 3. 前面円柱ガラスカバー＆スライドシャッター（閉鎖時および1.0秒開閉中のみ）
+      if (!isOpenEnough) {
+        const coverMaxH = 8;
+        const coverH = Math.max(0, Math.round((1 - openProgress) * coverMaxH));
+
+        if (coverH > 0) {
+          // 上側シャッター/強化ガラス（yTop+11 から下へ coverH）
+          ctx.fillStyle = "rgba(64, 200, 248, 0.28)";
+          ctx.fillRect(x + 2, yTop + 11, 12, coverH);
+          // 下側シャッター/強化ガラス（yTop+28-coverH から上へ）
+          ctx.fillRect(x + 2, yTop + 28 - coverH, 12, coverH);
+
+          // 円柱の丸み縦ガラスハイライト
+          ctx.fillStyle = "rgba(215, 248, 255, 0.55)";
+          ctx.fillRect(x + 3, yTop + 11, 1, coverH);
+          ctx.fillRect(x + 3, yTop + 28 - coverH, 1, coverH);
+          ctx.fillStyle = "rgba(18, 48, 86, 0.35)";
+          ctx.fillRect(x + 12, yTop + 11, 1, coverH);
+          ctx.fillRect(x + 12, yTop + 28 - coverH, 1, coverH);
+
+          // シャッター内側のメタリック縁（開いていく口）
+          ctx.fillStyle = "#627b9e";
+          ctx.fillRect(x + 2, yTop + 11 + coverH - 1, 12, 1);
+          ctx.fillRect(x + 2, yTop + 28 - coverH, 12, 1);
+        }
+
+        // ロック解除瞬間（0..15F）のロッククランプ＆解除フラッシュ
+        if (phase === "closed") {
+          ctx.fillStyle = "#36465f";
+          ctx.fillRect(x + 2, yTop + 18, 3, 3);
+          ctx.fillRect(x + 11, yTop + 18, 3, 3);
+          ctx.fillStyle = "#ff5a3a";
+          ctx.fillRect(x + 3, yTop + 19, 1, 1);
+          ctx.fillRect(x + 12, yTop + 19, 1, 1);
+        } else if (phase === "unlock") {
+          const flash = ((f >> 1) & 1) === 0;
+          const clampShift = Math.floor(((60 - remain) / 15) * 2);
+          ctx.fillStyle = flash ? "#ffffff" : "#64f0ff";
+          ctx.fillRect(x + 2, yTop + 18, Math.max(1, 3 - clampShift), 3);
+          ctx.fillRect(x + 11 + clampShift, yTop + 18, Math.max(1, 3 - clampShift), 3);
+          if (flash) {
+            ctx.fillStyle = "rgba(180, 248, 255, 0.35)";
+            ctx.fillRect(x + 2, yTop + 11, 12, 17);
+          }
+        } else if (phase === "sliding") {
+          // スライド中に左右へわずかに噴くシアン蒸気ドット
+          const puff = (f >> 1) & 1;
+          ctx.fillStyle = "rgba(170, 245, 255, 0.65)";
+          ctx.fillRect(x + 1, yTop + 18 + puff, 1, 1);
+          ctx.fillRect(x + 14, yTop + 19 - puff, 1, 1);
+        }
+      }
+
+      // 4. 上部SF円柱キャップ（yTop + 7 .. 10）
+      ctx.fillStyle = "#324159";
+      ctx.fillRect(x + 2, yTop + 7, 12, 4);
+      ctx.fillStyle = "#8ea6c4";
+      ctx.fillRect(x + 3, yTop + 7, 10, 1);
+      ctx.fillStyle = "#5c7394";
+      ctx.fillRect(x + 2, yTop + 8, 12, 2);
+      ctx.fillStyle = "#1c2434";
+      ctx.fillRect(x + 2, yTop + 10, 12, 1);
+
+      // キャップ中央の状態ランプ
+      let lampColor = "#ff4430";
+      if (phase === "closed") {
+        lampColor = ((f >> 4) & 1) ? "#ff5838" : "#a82418";
+      } else if (phase === "unlock") {
+        lampColor = ((f >> 1) & 1) ? "#ffffff" : "#58ffa8";
+      } else {
+        lampColor = "#48f8ff";
+      }
+      ctx.fillStyle = lampColor;
+      ctx.fillRect(x + 7, yTop + 8, 2, 2);
+
+      // 5. 下部SF円柱台座（yTop + 28 .. 31）
+      ctx.fillStyle = "#5e7594";
+      ctx.fillRect(x + 2, yTop + 28, 12, 1);
+      ctx.fillStyle = "#2b384e";
+      ctx.fillRect(x + 1, yTop + 29, 14, 3);
+      ctx.fillStyle = "#98b0ce";
+      ctx.fillRect(x + 3, yTop + 28, 4, 1);
+      ctx.fillStyle = isLit ? "#46f4ff" : "#22608a";
+      ctx.fillRect(x + 4, yTop + 30, 8, 1);
+      ctx.fillStyle = "#121824";
+      ctx.fillRect(x + 1, yTop + 31, 14, 1);
     },
 
     drawCracks(ctx, x, yTop, level) {
@@ -1200,6 +1455,10 @@
           trapped = world.getDrumTrappedActor(row, col);
         }
         this.drawDrum(ctx, x, yTop, trapped);
+      } else if (val === TILE.KEY) {
+        this.drawKey(ctx, x, yTop, world.f);
+      } else if (val === TILE.SHOE_POD) {
+        this.drawShoePod(ctx, x, yTop, world);
       } else if (val === TILE.BOMB) {
         this.drawBomb(ctx, x, yTop, world.f);
       } else if (val === TILE.TIMED_BOMB) {
