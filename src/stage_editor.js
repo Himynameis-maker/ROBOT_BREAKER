@@ -11,6 +11,8 @@
     SAND_LADDER: 0x02,
     DRUM: 0x08,
     HOLE: 0x09,
+    KEY: 0x0e,
+    SHOE_POD: 0x0f,
     WALL_1: 0xc1,
     WALL_2: 0x92,
     WALL_3: 0xa3,
@@ -35,6 +37,7 @@
   const STORAGE_KEY = "breaker_stage_editor_slots_v1";
   const TOTAL_SLOTS = 50;
   const MAX_ENEMIES = null;
+  const MAX_KEYS = 5;
 
   const EDITOR_TOOLS = [
     { id: "erase", label: "床 (消す)", group: "terrain", kind: "erase", desc: "穴を埋めて床に戻し、置いたモノ・敵を消します" },
@@ -50,6 +53,8 @@
     { id: "timedBomb", label: "時限爆弾", group: "wall", kind: "tile", tile: TILE.TIMED_BOMB, desc: "設定秒数で爆発（叩き無効）" },
     { id: "door", label: "自動ドア", group: "wall", kind: "tile", tile: TILE.DOOR, desc: "叩くと開く（敵が裏側へ出入り）" },
     { id: "pillar", label: "鉄柱", group: "wall", kind: "tile", tile: TILE.PILLAR, desc: "叩くと真上1マス分が落下（縦2連続は不可）" },
+    { id: "key", label: "水色の鍵", group: "wall", kind: "tile", tile: TILE.KEY, desc: "最大5個まで配置可。全部取ると空飛ぶ靴の筒が開きます" },
+    { id: "shoePod", label: "空飛ぶ靴筒", group: "wall", kind: "tile", tile: TILE.SHOE_POD, desc: "1ステージに1個だけ配置可（別マスで移動・鍵0個なら最初から開く）" },
     { id: "player", label: "主人公", group: "actor", kind: "actor", desc: "主人公の開始位置（再タップで向き反転）" },
     { id: "hunter", label: "追尾ロボ", group: "actor", kind: "actor", desc: "裏側から壁も叩いて追う敵（最大1体・再タップで向き反転）" },
     { id: "drone", label: "黄ロボ", group: "actor", kind: "enemy", enemyType: "drone", desc: "主人公を追う標準ロボ（再タップで向き反転）" },
@@ -213,12 +218,27 @@
     }
 
     const defaultTbSec = normalizeTimedSec(raw.timedBombSec);
-    const sortedTiles = Array.from(tileMap.values()).sort((a, b) => (a.row - b.row) || (a.col - b.col));
-    base.tiles = sortedTiles;
+    const rawSorted = Array.from(tileMap.values()).sort((a, b) => (a.row - b.row) || (a.col - b.col));
+    const filteredTiles = [];
+    let keyCount = 0;
+    let hasShoePod = false;
+    for (let i = 0; i < rawSorted.length; i++) {
+      const cell = rawSorted[i];
+      if (cell.tile === TILE.KEY) {
+        if (keyCount >= MAX_KEYS) continue;
+        keyCount += 1;
+      } else if (cell.tile === TILE.SHOE_POD) {
+        if (hasShoePod) continue;
+        hasShoePod = true;
+      }
+      filteredTiles.push(cell);
+    }
+
+    base.tiles = filteredTiles;
     base.timedBombs = [];
     const occupiedTiles = new Set();
-    for (let i = 0; i < sortedTiles.length; i++) {
-      const cell = sortedTiles[i];
+    for (let i = 0; i < filteredTiles.length; i++) {
+      const cell = filteredTiles[i];
       occupiedTiles.add(keyOf(cell.row, cell.col));
       if (cell.tile === TILE.TIMED_BOMB) {
         const k = keyOf(cell.row, cell.col);
@@ -424,9 +444,43 @@
       }
     }
 
+    const curTileAtCell = getTileAt(data, row, col);
+    if (tileVal === TILE.KEY && curTileAtCell !== TILE.KEY) {
+      let keyCount = 0;
+      for (let i = 0; i < data.tiles.length; i++) {
+        if (data.tiles[i].tile === TILE.KEY) keyCount += 1;
+      }
+      if (keyCount >= MAX_KEYS) {
+        return {
+          ok: false,
+          changed: false,
+          message: isDrag ? "" : ("水色の鍵は1ステージ" + MAX_KEYS + "個までしか置けません")
+        };
+      }
+    }
+
+    if (tileVal === TILE.SHOE_POD) {
+      if (curTileAtCell === TILE.SHOE_POD) {
+        return { ok: true, changed: false };
+      }
+      if (isDrag) {
+        return { ok: true, changed: false };
+      }
+    }
+
     let replacedMob = false;
     if (tileVal !== TILE.EMPTY && mobHere && !isDrag) {
       replacedMob = removeMobsAt(data, row, col, true, true);
+    }
+
+    let movedPod = false;
+    if (tileVal === TILE.SHOE_POD) {
+      for (let i = data.tiles.length - 1; i >= 0; i--) {
+        if (data.tiles[i].tile === TILE.SHOE_POD) {
+          data.tiles.splice(i, 1);
+          movedPod = true;
+        }
+      }
     }
 
     const validSec = normalizeTimedSec(timedSec);
@@ -466,14 +520,24 @@
       changed = true;
     }
 
-    const anyChanged = changed || replacedMob;
+    const anyChanged = changed || replacedMob || movedPod;
     if (anyChanged) {
       data.enabled = true;
     }
+
+    let msg;
+    if (movedPod && replacedMob) {
+      msg = "前の敵と置き換えて空飛ぶ靴筒を移動しました";
+    } else if (movedPod) {
+      msg = "空飛ぶ靴筒を移動しました";
+    } else if (replacedMob) {
+      msg = "前の敵と置き換えました";
+    }
+
     return {
       ok: true,
       changed: anyChanged,
-      message: replacedMob ? "前の敵と置き換えました" : undefined
+      message: msg
     };
   }
 
@@ -640,6 +704,8 @@
     [TILE.SAND_LADDER]: "SL",
     [TILE.DRUM]: "D",
     [TILE.HOLE]: "H",
+    [TILE.KEY]: "K",
+    [TILE.SHOE_POD]: "SP",
     [TILE.WALL_1]: "W1",
     [TILE.WALL_2]: "W2",
     [TILE.WALL_3]: "W3",
@@ -953,6 +1019,7 @@
     EDITOR_TOOLS,
     TOTAL_SLOTS,
     MAX_ENEMIES,
+    MAX_KEYS,
     getRangeForSlot,
     createBlankStage,
     cloneStageData,
