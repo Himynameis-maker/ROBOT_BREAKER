@@ -53,6 +53,7 @@
       this.waves = [];
       this.explosions = [];
       this.breakEffects = [];
+      this.pickupEffects = [];
       this.crumblingLadders = new Map();
       this.pillarBreaks = new Map();
       this.fallingPillars = [];
@@ -100,6 +101,11 @@
       this.introFrame = 0;
       this.startBannerTimer = 0;
       this.snapCameraRequested = false;
+
+      this.totalKeys = 0;
+      this.collectedKeys = 0;
+      this.shoePodState = "none"; // "none" | "closed" | "opening" | "open" | "collected"
+      this.shoePodOpenTimer = 0;
 
       const stepper = new ActorStepper();
       this.stepper = stepper;
@@ -163,6 +169,7 @@
         }
       }
 
+      this.initKeyAndShoePodState();
       this.orb = this.createInitialOrb();
     }
 
@@ -183,6 +190,99 @@
         animCount: 0,
         waveTick: 0
       };
+    }
+
+    countRemainingKeys() {
+      let count = 0;
+      for (let i = 0; i < this.tiles.length; i++) {
+        if (this.tiles[i] === TILE.KEY) {
+          count += 1;
+        }
+      }
+      for (let i = 0; i < this.fallingPillars.length; i++) {
+        if (this.fallingPillars[i].payloadTile === TILE.KEY) {
+          count += 1;
+        }
+      }
+      return count;
+    }
+
+    hasShoePodTile() {
+      for (let i = 0; i < this.tiles.length; i++) {
+        if (this.tiles[i] === TILE.SHOE_POD) {
+          return true;
+        }
+      }
+      for (let i = 0; i < this.fallingPillars.length; i++) {
+        if (this.fallingPillars[i].payloadTile === TILE.SHOE_POD) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    initKeyAndShoePodState() {
+      const keys = this.countRemainingKeys();
+      const hasPod = this.hasShoePodTile();
+      this.totalKeys = keys;
+      this.collectedKeys = 0;
+      this.shoePodOpenTimer = 0;
+      if (!hasPod) {
+        this.shoePodState = "none";
+      } else if (keys === 0) {
+        this.shoePodState = "open";
+      } else {
+        this.shoePodState = "closed";
+      }
+    }
+
+    updateKeyAndShoePickups() {
+      if (this.shoePodState === "opening") {
+        this.shoePodOpenTimer -= 1;
+        if (this.shoePodOpenTimer <= 0) {
+          this.shoePodOpenTimer = 0;
+          this.shoePodState = "open";
+        }
+      }
+
+      const p = this.player;
+      if (!p) return;
+      if (p.state === 10 || p.state === 15 || p.state === 16) return;
+
+      const px = this.wrapX(p.x + 8);
+      const py = p.y;
+      const halfW = this.worldWidth / 2;
+
+      for (let row = 0; row < this.rows; row++) {
+        const yTop = row * 32;
+        if (py < yTop + 12 || py > yTop + 48) continue;
+
+        for (let col = 0; col < this.cols; col++) {
+          const t = this.getTile(row, col);
+          if (t !== TILE.KEY && t !== TILE.SHOE_POD) continue;
+
+          const cx = col * 16 + 8;
+          let dx = px - cx;
+          if (dx >= halfW) dx -= this.worldWidth;
+          if (dx < -halfW) dx += this.worldWidth;
+          if (Math.abs(dx) >= 10) continue;
+
+          if (t === TILE.KEY) {
+            this.setTile(row, col, TILE.EMPTY);
+            this.collectedKeys += 1;
+            this.pickupEffects.push({ row, col, kind: "key", timer: 18, maxTimer: 18 });
+            if (this.countRemainingKeys() === 0 && this.shoePodState === "closed") {
+              this.shoePodState = "opening";
+              this.shoePodOpenTimer = 60;
+            }
+          } else if (t === TILE.SHOE_POD && this.shoePodState === "open") {
+            this.setTile(row, col, TILE.EMPTY);
+            this.shoePodState = "collected";
+            p.hasFlyingShoes = true;
+            this.pickupEffects.push({ row, col, kind: "shoe", timer: 24, maxTimer: 24 });
+          }
+        }
+      }
     }
 
     wrapX(x) {
@@ -730,6 +830,12 @@
           this.breakEffects.splice(i, 1);
         }
       }
+      for (let i = this.pickupEffects.length - 1; i >= 0; i--) {
+        this.pickupEffects[i].timer -= 1;
+        if (this.pickupEffects[i].timer <= 0) {
+          this.pickupEffects.splice(i, 1);
+        }
+      }
 
       if (this.waves.length === 0) return;
       const prevWaves = this.waves;
@@ -1213,6 +1319,9 @@
         this.updateTimedBombs();
       }
       this.stepper.step(this.player, this);
+      if (!this.tryAgainActive) {
+        this.updateKeyAndShoePickups();
+      }
       if (this.player.state === 1) {
         this.player.walkFrames = (this.player.walkFrames || 0) + 1;
       } else {
