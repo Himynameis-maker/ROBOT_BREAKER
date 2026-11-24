@@ -676,6 +676,45 @@
       ctx.fillRect(headX + (isLeft ? 2 : 1), headY + 1, 2, 1);
     },
 
+    drawPlayerShoeJet(baseX, drawY, facingDir, frame) {
+      const ctx = this.ctx;
+      const isLeft = (facingDir & LEFT) !== 0;
+      const foot1X = isLeft ? baseX + 3 : baseX + 4;
+      const foot2X = isLeft ? baseX + 8 : baseX + 9;
+      const tailShift = isLeft ? 1 : -1;
+      const fy = drawY + 26;
+      const phase = ((frame || 0) >> 1) & 3;
+
+      const drawFlame = (fx, alt) => {
+        const longTail = ((phase + alt) & 1) === 0;
+        // 靴底直下の高温白黄コア
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(fx + 1, fy, 2, 1);
+        ctx.fillStyle = "#fff278";
+        ctx.fillRect(fx + 1, fy + 1, 2, 1);
+        ctx.fillStyle = "#ffaa28";
+        ctx.fillRect(fx, fy, 1, 1);
+        ctx.fillRect(fx + 3, fy, 1, 1);
+
+        // 中間のオレンジ炎
+        ctx.fillStyle = "#ff8820";
+        ctx.fillRect(fx + (isLeft ? 1 : 0), fy + 1, 1, 1);
+        ctx.fillRect(fx + (isLeft ? 2 : 3), fy + 1, 1, 1);
+        ctx.fillRect(fx + 1 + (longTail ? 0 : tailShift), fy + 2, 2, 1);
+
+        // 先端の赤橙炎（後ろへわずかに流れる）
+        ctx.fillStyle = "#ff4418";
+        ctx.fillRect(fx + 1 + tailShift, fy + 3, 2, longTail ? 2 : 1);
+        if (longTail) {
+          ctx.fillStyle = "#ffe066";
+          ctx.fillRect(fx + 1 + tailShift, fy + 5, 1, 1);
+        }
+      };
+
+      drawFlame(foot1X, 0);
+      drawFlame(foot2X, 1);
+    },
+
     getPlayerHammerPhaseInfo(slot) {
       const t = slot.hammerTimer;
       if (slot.isGolden) {
@@ -837,6 +876,17 @@
             ctx.fillRect(baseX + 18, baseDrawY + 22, 1, 1);
             ctx.fillRect(baseX + 17, baseDrawY + 25, 1, 1);
           }
+        }
+        return;
+      }
+
+      if (slot.state === 12) {
+        const img = sprites["idle_" + facing];
+        if (!img) return;
+        ctx.drawImage(img, baseX, baseDrawY);
+        this.drawPlayerBackHammer(baseX, baseDrawY, faceVal, "side");
+        if ((slot.shoeHoverTimer || 0) === 0) {
+          this.drawPlayerShoeJet(baseX, baseDrawY, faceVal, world ? world.f : 0);
         }
         return;
       }
