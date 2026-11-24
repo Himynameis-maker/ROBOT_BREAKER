@@ -953,7 +953,7 @@
           this.startBannerBlinkTick++;
         }
         this.lastStartBannerTimer = world.startBannerTimer;
-        if (Math.floor(this.startBannerBlinkTick / 6) % 2 === 0) {
+        if (Math.floor(this.startBannerBlinkTick / 12) % 2 === 0) {
           this.drawBannerText(ctx, w, "START!", 44);
         }
       } else {
