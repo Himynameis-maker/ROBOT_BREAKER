@@ -130,8 +130,6 @@
       this.viewHeight = options.viewHeight || 240;
       this.camY = 0;
       this.isIntroCamMoving = false;
-      this.startBannerBlinkTick = 0;
-      this.lastStartBannerTimer = null;
       this.bannerCache = new Map();
       this.spaceGradient = null;
       this.spaceFieldCache = new Map();
@@ -474,8 +472,6 @@
 
     resetCamera(world) {
       this.isIntroCamMoving = false;
-      this.startBannerBlinkTick = 0;
-      this.lastStartBannerTimer = null;
       this.camY = world.introActive ? INTRO_START_CAM_Y : this.getBaseCamY(world);
     }
 
@@ -916,9 +912,6 @@
       ctx.restore();
 
       if (world.tryAgainActive && world.tryAgainPhase >= 2) {
-        this.startBannerBlinkTick = 0;
-        this.lastStartBannerTimer = null;
-
         // 上から下へ2.0秒(120F)かけて黒幕を下ろす（Phase 3は全画面真っ黒）
         const curtainRatio = world.tryAgainPhase === 3
           ? 1
@@ -940,25 +933,15 @@
         const visibleCount = Math.min(9, 1 + Math.floor(elapsedF / 4.8));
         this.drawBannerTextPartial(ctx, w, "TRY AGAIN !", visibleCount, 96);
       } else if (world.clearPhase === 2) {
-        this.startBannerBlinkTick = 0;
-        this.lastStartBannerTimer = null;
         this.drawBannerText(ctx, w, "CLEAR!", 100);
       } else if (world.introActive) {
-        this.startBannerBlinkTick = 0;
-        this.lastStartBannerTimer = null;
         const text = "STAGE " + (world.stageNumber || 1);
         this.drawBannerText(ctx, w, text, 44);
       } else if (world.startBannerTimer > 0) {
-        if (this.lastStartBannerTimer !== null && this.lastStartBannerTimer !== world.startBannerTimer) {
-          this.startBannerBlinkTick++;
-        }
-        this.lastStartBannerTimer = world.startBannerTimer;
-        if (Math.floor(this.startBannerBlinkTick / 12) % 2 === 0) {
+        const elapsed = Math.max(0, 72 - world.startBannerTimer);
+        if (Math.floor(elapsed / 6) % 2 === 0) {
           this.drawBannerText(ctx, w, "START!", 44);
         }
-      } else {
-        this.startBannerBlinkTick = 0;
-        this.lastStartBannerTimer = null;
       }
     }
   }
