@@ -108,6 +108,8 @@
     if (aboveTile === TILE.LADDER ||
         aboveTile === TILE.BREAK_LADDER ||
         aboveTile === TILE.SAND_LADDER ||
+        aboveTile === TILE.KEY ||
+        aboveTile === TILE.SHOE_POD ||
         aboveTile === TILE.DRUM) {
       return aboveTile;
     }
