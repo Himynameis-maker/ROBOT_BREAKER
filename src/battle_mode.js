@@ -159,7 +159,7 @@
       return true;
     }
 
-    // 96マスの厳密最短経路探索（誤差ゼロ・実時間コスト準拠・下り連続ハシゴ対応）
+    // 96マスの厳密最短経路探索（誤差ゼロ・実時間コスト準拠・連続ハシゴ上り横抜け＆下り最下段対応）
     findShortestPath(world, startRow, startCol, goalMatchFn, allowHoleDrop = false, allowWrap = true) {
       const rows = world.rows;
       const cols = world.cols;
@@ -213,57 +213,55 @@
         const c = cur.c;
 
         // 1. 横移動 (実時間ベース: 通常1マス = 1.0, 端ループ跨ぎ = 3.0)
+        // 実機(State 6/State 9)準拠で、連続ハシゴの上り到着・横通過からも左右へ抜けられる
         const horizDirs = [
           { dc: -1, bit: LEFT },
           { dc: 1, bit: RIGHT }
         ];
-        const canLeaveContHoriz = r === rows - 1 || !this.isContinuousLadder(world, r, c);
-        if (canLeaveContHoriz || curKey === startKey) {
-          for (let i = 0; i < horizDirs.length; i++) {
-            const rawNc = c + horizDirs[i].dc;
-            const wrapped = rawNc < 0 || rawNc >= cols;
-            if (wrapped && !allowWrap) continue;
-            const nc = world.wrapCol(rawNc);
-            const nextT = world.getTile(r, nc);
-            if (isSolidDrum(nextT) || nextT === TILE.DRUM_FALLING) continue;
+        for (let i = 0; i < horizDirs.length; i++) {
+          const rawNc = c + horizDirs[i].dc;
+          const wrapped = rawNc < 0 || rawNc >= cols;
+          if (wrapped && !allowWrap) continue;
+          const nc = world.wrapCol(rawNc);
+          const nextT = world.getTile(r, nc);
+          if (isSolidDrum(nextT) || nextT === TILE.DRUM_FALLING) continue;
 
-            if (r < rows - 1 && isFallHoleTile(nextT)) {
-              if (!allowHoleDrop) continue;
-              let landR = r + 1;
-              while (landR < rows - 1 && isFallHoleTile(world.getTile(landR, nc))) {
-                landR += 1;
-              }
-              if (isSolidDrum(world.getTile(landR, nc))) continue;
-              const dropCost = cur.g + 8.0 + (landR - r) * 2.5;
-              const lk = keyOf(landR, nc);
-              if (dropCost < dist[lk]) {
-                dist[lk] = dropCost;
-                open.push({
-                  r: landR,
-                  c: nc,
-                  g: dropCost,
-                  firstBits: cur.firstBits || horizDirs[i].bit
-                });
-              }
-              continue;
+          if (r < rows - 1 && isFallHoleTile(nextT)) {
+            if (!allowHoleDrop) continue;
+            let landR = r + 1;
+            while (landR < rows - 1 && isFallHoleTile(world.getTile(landR, nc))) {
+              landR += 1;
             }
-
-            const stepCost = wrapped ? 3.0 : 1.0;
-            const ng = cur.g + stepCost;
-            const nk = keyOf(r, nc);
-            if (ng < dist[nk]) {
-              dist[nk] = ng;
+            if (isSolidDrum(world.getTile(landR, nc))) continue;
+            const dropCost = cur.g + 8.0 + (landR - r) * 2.5;
+            const lk = keyOf(landR, nc);
+            if (dropCost < dist[lk]) {
+              dist[lk] = dropCost;
               open.push({
-                r,
+                r: landR,
                 c: nc,
-                g: ng,
+                g: dropCost,
                 firstBits: cur.firstBits || horizDirs[i].bit
               });
             }
+            continue;
+          }
+
+          const stepCost = wrapped ? 3.0 : 1.0;
+          const ng = cur.g + stepCost;
+          const nk = keyOf(r, nc);
+          if (ng < dist[nk]) {
+            dist[nk] = ng;
+            open.push({
+              r,
+              c: nc,
+              g: ng,
+              firstBits: cur.firstBits || horizDirs[i].bit
+            });
           }
         }
 
-        // 2. 上へハシゴ移動 (1段 = 約2.5マス分の時間コスト)
+        // 2. 上へハシゴ移動 (1段 = 約2.5マス分の時間コスト、通常もピンクも同じ)
         if (r > 0 && isLadderTile(world.getTile(r, c))) {
           const upT = world.getTile(r - 1, c);
           if (!isSolidDrum(upT) && upT !== TILE.DRUM_FALLING && !isFallHoleTile(upT)) {
@@ -461,7 +459,7 @@
         if (a.count !== b.count) return b.count - a.count;
         return a.row - b.row;
       });
-      return list.map(item => item.row);
+      return list;
     }
 
     startBombEscapeIfNeeded(world, hu) {
@@ -621,7 +619,7 @@
       if (res.cost > maxReasonable && (res.firstBits & wantDir) === 0) {
         return null;
       }
-      return { row: res.row, col: res.col, firstBits: res.firstBits };
+      return { row: res.row, col: res.col, firstBits: res.firstBits, cost: res.cost };
     }
 
     // A* で最短（実移動コスト最小）のドア除く破壊可能オブジェを探し、自力で殴るまでロック継続
@@ -758,21 +756,31 @@
         if (canExitSide) {
           const checkGoal = this.aStarLockTarget || this.routeTarget;
           let exitBits = 0;
-          if (checkGoal && checkGoal.row === floorRow) {
-            if (checkGoal.col !== hu.col) {
-              const res = this.findShortestPath(
+          if (checkGoal) {
+            if (!(checkGoal.row === floorRow && checkGoal.col === hu.col)) {
+              let res = this.findShortestPath(
                 world,
                 floorRow,
                 hu.col,
                 (r, c) => r === checkGoal.row && c === checkGoal.col,
                 !!checkGoal.allowHoleDrop,
-                true
+                false
               );
+              if (!res.found) {
+                res = this.findShortestPath(
+                  world,
+                  floorRow,
+                  hu.col,
+                  (r, c) => r === checkGoal.row && c === checkGoal.col,
+                  !!checkGoal.allowHoleDrop,
+                  true
+                );
+              }
               if (res.found && (res.firstBits & (LEFT | RIGHT)) !== 0) {
                 exitBits = res.firstBits;
               }
             }
-          } else if (!checkGoal && this.hasAnyDirectDestroyTargetWithinRange(world, floorRow, hu.col, HORIZ_SEARCH_RANGE)) {
+          } else if (this.hasAnyDirectDestroyTargetWithinRange(world, floorRow, hu.col, HORIZ_SEARCH_RANGE)) {
             const target = this.findNearestDirectRowDestroyTarget(world, floorRow, hu.col, HORIZ_SEARCH_RANGE);
             if (target) {
               if (target.col < hu.col) exitBits = LEFT;
@@ -1023,23 +1031,26 @@
       }
 
       // === 水平6マス以内に破壊可能オブジェがない、または穴・ドラム缶で行けない時 ===
-      // 上下の「近い高さ＆破壊対象が多い段」を優先して検索する
-      const heightRows = this.getClosestHeightRows(world, hu.row, true);
-      if (heightRows.length > 0) {
-        const primaryRow = heightRows[0];
-        const clean = this.canMoveCleanlyToHeightRow(world, hu, primaryRow);
-        if (clean) {
-          this.routeTarget = { row: clean.row, col: clean.col };
-          this.stepToBits(hu, clean.firstBits);
-          return;
-        }
-        if (heightRows.length > 1 && Math.abs(heightRows[1] - hu.row) === Math.abs(primaryRow - hu.row)) {
-          const altClean = this.canMoveCleanlyToHeightRow(world, hu, heightRows[1]);
-          if (altClean) {
-            this.routeTarget = { row: altClean.row, col: altClean.col };
-            this.stepToBits(hu, altClean.firstBits);
-            return;
+      // 上下の「近い高さ＆破壊対象が多い段（同高さで明らかに行きやすい近いハシゴがあればそちら優先）」を検索
+      const heightEntries = this.getClosestHeightRows(world, hu.row, true);
+      if (heightEntries.length > 0) {
+        const primaryRow = heightEntries[0].row;
+        const clean0 = this.canMoveCleanlyToHeightRow(world, hu, primaryRow);
+        let chosen = clean0;
+
+        if (heightEntries.length > 1 && heightEntries[1].diff === heightEntries[0].diff) {
+          const clean1 = this.canMoveCleanlyToHeightRow(world, hu, heightEntries[1].row);
+          if (!chosen) {
+            chosen = clean1;
+          } else if (clean1 && (clean0.cost - clean1.cost) >= 2.0) {
+            chosen = clean1;
           }
+        }
+
+        if (chosen) {
+          this.routeTarget = { row: chosen.row, col: chosen.col };
+          this.stepToBits(hu, chosen.firstBits);
+          return;
         }
       }
 
