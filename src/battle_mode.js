@@ -296,6 +296,16 @@
       return false;
     }
 
+    countDestroyTargetsOnRow(world, row) {
+      let count = 0;
+      for (let c = 0; c < world.cols; c++) {
+        if (isBattleDestroyTargetTile(world.getTile(row, c))) {
+          count += 1;
+        }
+      }
+      return count;
+    }
+
     hasAnyDestroyTargetInMap(world) {
       for (let r = 0; r < world.rows; r++) {
         if (this.hasAnyDestroyTargetOnRow(world, r)) return true;
@@ -388,20 +398,24 @@
       return bestDirect || bestAny;
     }
 
+    // 最も近い高さの段を列挙（同距離時はドア以外の破壊可能オブジェクトが多い段を優先、同数なら上優先）
     getClosestHeightRows(world, fromRow) {
       const list = [];
       for (let r = 0; r < world.rows; r++) {
         if (this.hasAnyDestroyTargetOnRow(world, r)) {
-          list.push(r);
+          list.push({
+            row: r,
+            diff: Math.abs(r - fromRow),
+            count: this.countDestroyTargetsOnRow(world, r)
+          });
         }
       }
       list.sort((a, b) => {
-        const da = Math.abs(a - fromRow);
-        const db = Math.abs(b - fromRow);
-        if (da !== db) return da - db;
-        return a - b;
+        if (a.diff !== b.diff) return a.diff - b.diff;
+        if (a.count !== b.count) return b.count - a.count;
+        return a.row - b.row;
       });
-      return list;
+      return list.map(item => item.row);
     }
 
     startBombEscapeIfNeeded(world, hu) {
@@ -517,11 +531,9 @@
         false
       );
       if (!res.found) return null;
-      // 上の段へ行きたいのに下向き、下へ行きたいのに上向きの大迂回が必要なら進めない扱いとする
       const wantDir = targetRow < hu.row ? UP : DOWN;
       const oppDir = targetRow < hu.row ? DOWN : UP;
       if ((res.firstBits & oppDir) !== 0) return null;
-      // 反対側の段を一度またぐような遠回り（段差*2.5 + 横16以上相当）も素直に進めない扱い
       const maxReasonable = Math.abs(targetRow - hu.row) * 2.5 + 14;
       if (res.cost > maxReasonable && (res.firstBits & wantDir) === 0) {
         return null;
@@ -531,7 +543,6 @@
 
     // A* で最短（実移動コスト最小）のドア除く破壊可能オブジェを探し、自力で殴るまでロック継続
     acquireAndFollowAStarTarget(world, hu) {
-      // 移動中に今立っているマス自体に叩ける破壊可能オブジェがあるなら（それが最短達成！）即殴る
       if (isBattleHittableDestroyTile(world, hu.row, hu.col)) {
         this.wantHammerCell = { row: hu.row, col: hu.col, isLock: true };
         return true;
@@ -771,7 +782,7 @@
         }
       }
 
-      // 段移動中の目標ロック（目標の段に着いたら解除、途中に足元に壊せる物があれば止まって処理可）
+      // 段移動中の目標ロック
       if (this.routeTarget) {
         const rt = this.routeTarget;
         if (hu.row !== rt.row && isBattleHittableDestroyTile(world, rt.row, rt.col)) {
@@ -786,7 +797,7 @@
       if (!this.hasAnyDestroyTargetOnRow(world, hu.row)) {
         const heightRows = this.getClosestHeightRows(world, hu.row);
         if (heightRows.length > 0) {
-          // 最も近い高さ（上優先）へ素直に進めるか確認
+          // 最も近い高さ（同距離時は破壊対象が多い段優先）へ素直に進めるか確認
           const primaryRow = heightRows[0];
           const clean = this.canMoveCleanlyToHeightRow(world, hu, primaryRow);
           if (clean) {
@@ -794,7 +805,7 @@
             this.stepToBits(hu, clean.firstBits);
             return;
           }
-          // 上と下が同距離で上に行けない場合のみ、もう一方の同距離段を確認
+          // 同距離のもう一方の段があればそちらも確認
           if (heightRows.length > 1 && Math.abs(heightRows[1] - hu.row) === Math.abs(primaryRow - hu.row)) {
             const altClean = this.canMoveCleanlyToHeightRow(world, hu, heightRows[1]);
             if (altClean) {
