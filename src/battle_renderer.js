@@ -121,7 +121,9 @@
         const p = battle.popups[i];
         const blink = p.timer <= 8 && (p.timer & 1) === 1;
         if (blink) continue;
-        const textColor = p.byPlayer ? "#ffffff" : "#ffe878";
+        const textColor = p.byPlayer
+          ? (p.isAction ? "#98f4ff" : "#ffffff")
+          : (p.isAction ? "#ffb0a0" : "#ffe878");
         const outlineColor = p.byPlayer ? "#105898" : "#981e10";
         this.drawPixelText5x7(ctx, String(p.points), p.x, p.y, {
           scale: 1,
@@ -173,7 +175,6 @@
       const bx = centerX - Math.floor(boxW / 2);
       const by = 2;
 
-      // 外枠影＋角欠けドット枠
       ctx.fillStyle = "#04060e";
       ctx.fillRect(bx + 1, by, boxW - 2, boxH);
       ctx.fillRect(bx, by + 1, boxW, boxH - 2);
@@ -193,7 +194,6 @@
       ctx.fillStyle = "#081024";
       ctx.fillRect(bx + 2, by + 2, boxW - 4, boxH - 4);
 
-      // 4隅のレトロ飾りドット
       ctx.fillStyle = "#ffd058";
       ctx.fillRect(bx + 2, by + 2, 1, 1);
       ctx.fillRect(bx + boxW - 3, by + 2, 1, 1);
@@ -237,7 +237,7 @@
           const midX = Math.round(w / 2);
 
           // タイトル
-          this.drawPixelText5x7(ctx, "RESULT", midX, 12, {
+          this.drawPixelText5x7(ctx, "RESULT", midX, 10, {
             scale: 2,
             color: "#ffe868",
             outlineColor: "#000000",
@@ -246,37 +246,36 @@
 
           // 中央の縦区切り（点線）
           ctx.fillStyle = "#3a4c70";
-          for (let yy = 34; yy <= 178; yy += 6) {
+          for (let yy = 32; yy <= 178; yy += 6) {
             ctx.fillRect(midX - 1, yy, 2, 3);
           }
 
           // 左右プレイヤー見出し
-          this.drawPixelText5x7(ctx, "PLAYER", leftCx, 36, {
+          this.drawPixelText5x7(ctx, "PLAYER", leftCx, 30, {
             scale: 1,
             color: "#5ce4ff",
             outlineColor: "#000000",
             align: "center"
           });
-          this.drawPixelText5x7(ctx, "HUNTER", rightCx, 36, {
+          this.drawPixelText5x7(ctx, "HUNTER", rightCx, 30, {
             scale: 1,
             color: "#ff724c",
             outlineColor: "#000000",
             align: "center"
           });
 
-          // 内訳 200*N, 400*N, 600*N, 800*N を段階表示
-          const rows = [
-            { label: "200*", key: "c200", at: 15, color: "#ffffff", y: 54 },
-            { label: "400*", key: "c400", at: 35, color: "#98f0ff", y: 76 },
-            { label: "600*", key: "c600", at: 55, color: "#ffe870", y: 98 },
-            { label: "800*", key: "c800", at: 75, color: "#ff90a8", y: 120 }
-          ];
-
           const ps = battle.scores.player;
           const hs = battle.scores.hunter;
 
-          for (let i = 0; i < rows.length; i++) {
-            const row = rows[i];
+          // 壁・通常オブジェクト破壊内訳 200*N, 400*N, 600*N
+          const objRows = [
+            { label: "200*", key: "c200", at: 15, color: "#ffffff", y: 45 },
+            { label: "400*", key: "c400", at: 35, color: "#98f0ff", y: 65 },
+            { label: "600*", key: "c600", at: 55, color: "#ffe870", y: 85 }
+          ];
+
+          for (let i = 0; i < objRows.length; i++) {
+            const row = objRows[i];
             if (t < row.at) continue;
             this.drawPixelText5x7(ctx, row.label + padCount2(ps[row.key]), leftCx, row.y, {
               scale: 2,
@@ -292,11 +291,40 @@
             });
           }
 
+          // アクション枠（敵裏入り・敵落とし・相手落とし：すべて400点）
+          if (t >= 75) {
+            this.drawPixelText5x7(ctx, "ACTION", leftCx, 107, {
+              scale: 1,
+              color: "#ff90a8",
+              outlineColor: "#000000",
+              align: "center"
+            });
+            this.drawPixelText5x7(ctx, "ACTION", rightCx, 107, {
+              scale: 1,
+              color: "#ff90a8",
+              outlineColor: "#000000",
+              align: "center"
+            });
+
+            this.drawPixelText5x7(ctx, "400*" + padCount2(ps.cAction), leftCx, 117, {
+              scale: 2,
+              color: "#ff90a8",
+              outlineColor: "#000000",
+              align: "center"
+            });
+            this.drawPixelText5x7(ctx, "400*" + padCount2(hs.cAction), rightCx, 117, {
+              scale: 2,
+              color: "#ff90a8",
+              outlineColor: "#000000",
+              align: "center"
+            });
+          }
+
           // 少し間を置いて合計点
           if (t >= 110) {
             ctx.fillStyle = "#526890";
-            ctx.fillRect(14, 142, midX - 24, 2);
-            ctx.fillRect(midX + 10, 142, midX - 24, 2);
+            ctx.fillRect(14, 140, midX - 24, 2);
+            ctx.fillRect(midX + 10, 140, midX - 24, 2);
 
             this.drawPixelText5x7(ctx, "TOTAL", leftCx, 148, {
               scale: 1,
@@ -336,7 +364,7 @@
               winText = "HUNTER WIN!";
               winColor = ((t >> 3) & 1) ? "#ff7a52" : "#ffe080";
             }
-            this.drawPixelText5x7(ctx, winText, midX, 194, {
+            this.drawPixelText5x7(ctx, winText, midX, 192, {
               scale: 2,
               color: winColor,
               outlineColor: "#000000",
