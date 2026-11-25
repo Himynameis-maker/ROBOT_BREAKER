@@ -159,7 +159,7 @@
       return true;
     }
 
-    // 96マスの厳密最短経路探索（誤差ゼロ・実時間コスト準拠・連続ハシゴ上り横抜け＆下り最下段対応）
+    // 96マスの厳密最短経路探索（誤差ゼロ・実時間コスト準拠・連続ハシゴ上り下り両方で途中段横抜け対応）
     findShortestPath(world, startRow, startCol, goalMatchFn, allowHoleDrop = false, allowWrap = true) {
       const rows = world.rows;
       const cols = world.cols;
@@ -213,7 +213,7 @@
         const c = cur.c;
 
         // 1. 横移動 (実時間ベース: 通常1マス = 1.0, 端ループ跨ぎ = 3.0)
-        // 実機(State 6/State 9)準拠で、連続ハシゴの上り到着・横通過からも左右へ抜けられる
+        // 実機(State 6/State 2 prom=31/State 9)準拠で、連続ハシゴの上り到着・下り到着・横通過からも左右へ抜けられる
         const horizDirs = [
           { dc: -1, bit: LEFT },
           { dc: 1, bit: RIGHT }
@@ -279,32 +279,21 @@
           }
         }
 
-        // 3. 下へハシゴ移動（連続ハシゴは一番下まで降り切る実機準拠エッジ）
+        // 3. 下へハシゴ移動（1段ずつ降りられ、連続ハシゴの中間段でも State 6 -> State 2 prom=31 で横抜け可能）
         if (r < rows - 1 && isLadderTile(world.getTile(r + 1, c)) && isStandableFloor(r, c)) {
-          let endR = r + 1;
-          let blocked = false;
-          while (endR < rows - 1 && this.isContinuousLadder(world, endR, c)) {
-            const belowT = world.getTile(endR + 1, c);
-            if (isSolidDrum(belowT) || belowT === TILE.DRUM_FALLING) {
-              blocked = true;
-              break;
-            }
-            endR += 1;
-          }
-          if (!blocked) {
-            const endT = world.getTile(endR, c);
-            if (!isSolidDrum(endT) && endT !== TILE.DRUM_FALLING && !(endR < rows - 1 && isFallHoleTile(endT))) {
-              const ng = cur.g + 2.5 * (endR - r);
-              const dk = keyOf(endR, c);
-              if (ng < dist[dk]) {
-                dist[dk] = ng;
-                open.push({
-                  r: endR,
-                  c,
-                  g: ng,
-                  firstBits: cur.firstBits || DOWN
-                });
-              }
+          const downR = r + 1;
+          const downT = world.getTile(downR, c);
+          if (!isSolidDrum(downT) && downT !== TILE.DRUM_FALLING && !(downR < rows - 1 && isFallHoleTile(downT))) {
+            const ng = cur.g + 2.5;
+            const dk = keyOf(downR, c);
+            if (ng < dist[dk]) {
+              dist[dk] = ng;
+              open.push({
+                r: downR,
+                c,
+                g: ng,
+                firstBits: cur.firstBits || DOWN
+              });
             }
           }
         }
@@ -677,6 +666,77 @@
       return true;
     }
 
+    // State 6(上り途中段) や State 2 prom>=31(下り途中段床到達直後) で横へ抜けるべき方向があるか調べる
+    findLadderSideExitBits(world, hu, checkRow) {
+      const checkGoal = this.aStarLockTarget || this.routeTarget;
+      let exitBits = 0;
+      let allowDrop = false;
+
+      if (checkGoal) {
+        allowDrop = !!checkGoal.allowHoleDrop;
+        if (!(checkGoal.row === checkRow && checkGoal.col === hu.col)) {
+          let res = this.findShortestPath(
+            world,
+            checkRow,
+            hu.col,
+            (r, c) => r === checkGoal.row && c === checkGoal.col,
+            allowDrop,
+            false
+          );
+          if (!res.found) {
+            res = this.findShortestPath(
+              world,
+              checkRow,
+              hu.col,
+              (r, c) => r === checkGoal.row && c === checkGoal.col,
+              allowDrop,
+              true
+            );
+          }
+          if (res.found && (res.firstBits & (LEFT | RIGHT)) !== 0) {
+            exitBits = res.firstBits;
+          }
+        }
+      } else if (this.hasAnyDirectDestroyTargetWithinRange(world, checkRow, hu.col, HORIZ_SEARCH_RANGE)) {
+        const target = this.findNearestDirectRowDestroyTarget(world, checkRow, hu.col, HORIZ_SEARCH_RANGE);
+        if (target) {
+          if (target.col < hu.col) exitBits = LEFT;
+          else if (target.col > hu.col) exitBits = RIGHT;
+        }
+      } else {
+        let res = this.findShortestPath(
+          world,
+          checkRow,
+          hu.col,
+          (r, c) => isBattleHittableDestroyTile(world, r, c),
+          false,
+          false
+        );
+        if (!res.found) {
+          res = this.findShortestPath(
+            world,
+            checkRow,
+            hu.col,
+            (r, c) => isBattleHittableDestroyTile(world, r, c),
+            false,
+            true
+          );
+        }
+        if (res.found && (res.firstBits & (LEFT | RIGHT)) !== 0) {
+          exitBits = res.firstBits;
+        }
+      }
+
+      if (exitBits === 0) return 0;
+      const nextCol = world.wrapCol(hu.col + ((exitBits & RIGHT) ? 1 : -1));
+      const nextT = world.getTile(checkRow, nextCol);
+      const holeOk = allowDrop || !(checkRow < world.rows - 1 && isFallHoleTile(nextT));
+      if (!isSolidDrum(nextT) && nextT !== TILE.DRUM_FALLING && holeOk) {
+        return exitBits;
+      }
+      return 0;
+    }
+
     handleLadderAndTransitionStates(world, hu, pl) {
       if (hu.state === 4) {
         hu.bits = 0;
@@ -730,6 +790,21 @@
       }
 
       if (hu.state === 2) {
+        // 連続ハシゴを下ってきて途中段の床高さに着いた瞬間（State 6 完了直後の prom >= 31）に横抜け判定
+        const canExitDownMid = hu.prom >= 31 &&
+          (hu.y & 0x1f) === 0 &&
+          world.stepper &&
+          world.stepper.isContinuousLadderSegment(hu.row, hu.col, world);
+        if (canExitDownMid) {
+          const exitBits = this.findLadderSideExitBits(world, hu, hu.row);
+          if (exitBits !== 0) {
+            this.lastClimbY = null;
+            this.climbStuckFrames = 0;
+            hu.bits = exitBits;
+            return true;
+          }
+        }
+
         let vDir = hu.dir & (UP | DOWN);
         if (vDir === 0) vDir = UP;
 
@@ -754,46 +829,10 @@
         const canExitSide = hu.prom < 10;
 
         if (canExitSide) {
-          const checkGoal = this.aStarLockTarget || this.routeTarget;
-          let exitBits = 0;
-          if (checkGoal) {
-            if (!(checkGoal.row === floorRow && checkGoal.col === hu.col)) {
-              let res = this.findShortestPath(
-                world,
-                floorRow,
-                hu.col,
-                (r, c) => r === checkGoal.row && c === checkGoal.col,
-                !!checkGoal.allowHoleDrop,
-                false
-              );
-              if (!res.found) {
-                res = this.findShortestPath(
-                  world,
-                  floorRow,
-                  hu.col,
-                  (r, c) => r === checkGoal.row && c === checkGoal.col,
-                  !!checkGoal.allowHoleDrop,
-                  true
-                );
-              }
-              if (res.found && (res.firstBits & (LEFT | RIGHT)) !== 0) {
-                exitBits = res.firstBits;
-              }
-            }
-          } else if (this.hasAnyDirectDestroyTargetWithinRange(world, floorRow, hu.col, HORIZ_SEARCH_RANGE)) {
-            const target = this.findNearestDirectRowDestroyTarget(world, floorRow, hu.col, HORIZ_SEARCH_RANGE);
-            if (target) {
-              if (target.col < hu.col) exitBits = LEFT;
-              else if (target.col > hu.col) exitBits = RIGHT;
-            }
-          }
-
+          const exitBits = this.findLadderSideExitBits(world, hu, floorRow);
           if (exitBits !== 0) {
-            const nextCol = world.wrapCol(hu.col + ((exitBits & RIGHT) ? 1 : -1));
-            if (!isSolidDrum(world.getTile(floorRow, nextCol))) {
-              hu.bits = exitBits;
-              return true;
-            }
+            hu.bits = exitBits;
+            return true;
           }
         }
 
