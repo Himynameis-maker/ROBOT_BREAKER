@@ -55,6 +55,7 @@
       touch-action: manipulation;
     }
     button.active { background: #2f6fed; border-color: #5b90ff; }
+    button.battle-active { background: #c93b2b; border-color: #ff7c6b; }
     .dev-panel {
       width: 100%;
       max-width: 580px;
@@ -174,6 +175,7 @@
   <div class="topbar">
     <div id="stageBadge" class="stage-pill">STAGE 1</div>
     <div class="btn-row">
+      <button id="battleBtn" type="button">バトル</button>
       <button id="resetBtn" type="button">リセット</button>
       <button id="devToggleBtn" type="button" aria-expanded="false">開発</button>
     </div>
@@ -184,6 +186,7 @@
       <select id="modeSelect" aria-label="モード選択">
         <option value="normal">通常モード（制作50面）</option>
         <option value="test">テスト用（10面）</option>
+        <option value="battle">バトルモード（VSハンター 25s）</option>
       </select>
       <select id="stageSelect" aria-label="ステージ選択"></select>
       <select id="timedBombSecSelect" aria-label="時限爆弾秒数設定">
@@ -225,9 +228,12 @@
   <script src="./src/actor_stepper.js"></script>
   <script src="./src/hunter_ai.js"></script>
   <script src="./src/enemy_ai.js"></script>
+  <script src="./src/battle_map.js"></script>
+  <script src="./src/battle_mode.js"></script>
   <script src="./src/game_world.js"></script>
   <script src="./data/sprites.js"></script>
   <script src="./src/renderer.js"></script>
+  <script src="./src/battle_renderer.js"></script>
   <script src="./src/render_tiles.js"></script>
   <script src="./src/render_actors.js"></script>
   <script src="./src/render_enemies.js"></script>
@@ -244,7 +250,7 @@
   <script src="./data/stages_41_50.js"></script>
   <script>
     (function () {
-      const { RIGHT, LEFT, DOWN, UP, HAMMER, GameWorld } = window.BreakerGame;
+      const { RIGHT, LEFT, DOWN, UP, HAMMER, GameWorld, generateBattleStage } = window.BreakerGame;
       const { Renderer } = window.BreakerRender;
       const { STAGES } = window.BreakerStages || { STAGES: {} };
       const NORMAL_STAGES = window.BreakerNormalStages || {};
@@ -266,6 +272,7 @@
       const screenWrap = document.getElementById("screenWrap");
       const renderer = new Renderer(canvas, { viewHeight: 240 });
       const stageBadge = document.getElementById("stageBadge");
+      const battleBtn = document.getElementById("battleBtn");
       const devToggleBtn = document.getElementById("devToggleBtn");
       const devPanel = document.getElementById("devPanel");
       const modeSelect = document.getElementById("modeSelect");
@@ -286,6 +293,8 @@
       let keyBits = 0;
       let hammerBtnDown = false;
       let activeEntries = [];
+      let lastNonBattleMode = "normal";
+      let resultHammerWaitPrev = false;
 
       function getNormalEntries() {
         const list = [];
@@ -319,6 +328,12 @@
         });
       }
 
+      function updateBattleButtonUI() {
+        const isBattle = modeSelect.value === "battle";
+        battleBtn.classList.toggle("battle-active", isBattle);
+        battleBtn.textContent = isBattle ? "通常へ" : "バトル";
+      }
+
       function rebuildStageSelect(preferredKey) {
         const normalList = getNormalEntries();
         const normalOpt = modeSelect.querySelector('option[value="normal"]');
@@ -335,6 +350,23 @@
           }
         }
 
+        if (modeSelect.value !== "battle") {
+          lastNonBattleMode = modeSelect.value;
+        }
+        updateBattleButtonUI();
+
+        if (modeSelect.value === "battle") {
+          activeEntries = [];
+          stageSelect.innerHTML = "";
+          const opt = document.createElement("option");
+          opt.value = "battle";
+          opt.textContent = "ランダム生成（16×6・25秒バトル）";
+          stageSelect.appendChild(opt);
+          stageSelect.disabled = true;
+          return;
+        }
+
+        stageSelect.disabled = false;
         activeEntries = modeSelect.value === "normal" && normalList.length > 0
           ? normalList
           : getTestEntries();
@@ -356,7 +388,11 @@
 
       function updateTopBadge() {
         if (!world) return;
-        stageBadge.textContent = "STAGE " + world.stageNumber + (paused ? " [PAUSE]" : "");
+        if (world.isBattleMode) {
+          stageBadge.textContent = "VS HUNTER" + (paused ? " [PAUSE]" : "");
+        } else {
+          stageBadge.textContent = "STAGE " + world.stageNumber + (paused ? " [PAUSE]" : "");
+        }
       }
 
       function applyZoomMode() {
@@ -379,27 +415,45 @@
       }
 
       function createStage() {
-        const selected = activeEntries.find(e => e.key === stageSelect.value) || activeEntries[0];
-        if (!selected) return;
-        const cfg = selected.cfg;
-        const stageNumber = selected.stageNumber;
-        const tbVal = Number(timedBombSecSelect.value);
-        const timedBombOverrideSec = (tbVal === 15 || tbVal === 30 || tbVal === 45 || tbVal === 60) ? tbVal : null;
-        world = new GameWorld({
-          stageNumber,
-          cols: cfg.cols,
-          rows: cfg.rows,
-          tiles: cfg.tiles,
-          timedBombs: cfg.timedBombs,
-          timedBombSec: cfg.timedBombSec,
-          timedBombOverrideSec,
-          player: cfg.player,
-          hunter: cfg.hunter,
-          enemies: cfg.enemies,
-          orb: cfg.orb,
-          orbFast: cfg.orbFast
-        });
-        world.player.prevHammer = (currentBits() & HAMMER) !== 0;
+        if (modeSelect.value === "battle" && typeof generateBattleStage === "function") {
+          const cfg = generateBattleStage();
+          world = new GameWorld({
+            stageNumber: 1,
+            cols: cfg.cols,
+            rows: cfg.rows,
+            tiles: cfg.tiles,
+            player: cfg.player,
+            hunter: cfg.hunter,
+            enemies: cfg.enemies,
+            orb: false,
+            isBattleMode: true
+          });
+        } else {
+          const selected = activeEntries.find(e => e.key === stageSelect.value) || activeEntries[0];
+          if (!selected) return;
+          const cfg = selected.cfg;
+          const stageNumber = selected.stageNumber;
+          const tbVal = Number(timedBombSecSelect.value);
+          const timedBombOverrideSec = (tbVal === 15 || tbVal === 30 || tbVal === 45 || tbVal === 60) ? tbVal : null;
+          world = new GameWorld({
+            stageNumber,
+            cols: cfg.cols,
+            rows: cfg.rows,
+            tiles: cfg.tiles,
+            timedBombs: cfg.timedBombs,
+            timedBombSec: cfg.timedBombSec,
+            timedBombOverrideSec,
+            player: cfg.player,
+            hunter: cfg.hunter,
+            enemies: cfg.enemies,
+            orb: cfg.orb,
+            orbFast: cfg.orbFast
+          });
+        }
+
+        const bitsNow = currentBits();
+        world.player.prevHammer = (bitsNow & HAMMER) !== 0;
+        resultHammerWaitPrev = (bitsNow & HAMMER) !== 0;
         updateTopBadge();
         applyZoomMode();
         renderer.resetCamera(world);
@@ -426,7 +480,21 @@
       }
 
       function stepOneFrame() {
-        world.step(currentBits());
+        const bits = currentBits();
+        if (world.battleManager && world.battleManager.resultFinished) {
+          const hNow = (bits & HAMMER) !== 0;
+          const hEdge = hNow && !resultHammerWaitPrev;
+          resultHammerWaitPrev = hNow;
+          if (hEdge) {
+            createStage();
+            return true;
+          }
+          world.step(0);
+          return false;
+        }
+
+        resultHammerWaitPrev = (bits & HAMMER) !== 0;
+        world.step(bits);
         if (world.deathFinished || world.tryAgainFinished) {
           createStage();
           return true;
@@ -523,6 +591,14 @@
           "Player st:" + p.state + " X:" + p.x + " Y:" + Math.round(p.y) + " (" + p.row + "," + p.col + ") f:" + (p.facing & 2 ? "L" : "R") + actorTag(p) + playerHitLabel + "\n" +
           hunterLine + "\n" +
           aiLine + " | " + orbLabel(world.orb, world);
+        if (world.battleManager) {
+          const bm = world.battleManager;
+          const lockTag = bm.hunterAI.lockedTarget
+            ? (" LOCK(" + bm.hunterAI.lockedTarget.row + "," + bm.hunterAI.lockedTarget.col + ")")
+            : "";
+          hudEl.textContent += "\nBATTLE T:" + (bm.remainFrames / 60).toFixed(2) + "s P:" + bm.scores.player.total + " H:" + bm.scores.hunter.total +
+            (bm.hunterAI.useNormalChase ? " [CHASE]" : "") + lockTag + (bm.ended ? " [" + bm.endReason + "]" : "");
+        }
         if (world.timedBombs && world.timedBombs.length > 0) {
           hudEl.textContent += "\nTB: " + world.timedBombs.map(tb => timedBombLabel(tb, world)).join(" | ");
         }
@@ -662,6 +738,18 @@
         devToggleBtn.classList.toggle("active", isOpen);
         devToggleBtn.setAttribute("aria-expanded", String(isOpen));
         devToggleBtn.blur();
+      });
+
+      battleBtn.addEventListener("click", function () {
+        if (modeSelect.value === "battle") {
+          modeSelect.value = lastNonBattleMode || "test";
+        } else {
+          lastNonBattleMode = modeSelect.value;
+          modeSelect.value = "battle";
+        }
+        rebuildStageSelect();
+        createStage();
+        battleBtn.blur();
       });
 
       modeSelect.addEventListener("change", function () {
