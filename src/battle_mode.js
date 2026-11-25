@@ -131,8 +131,8 @@
       return true;
     }
 
-    // 96マスのA*経路探索（下り連続ハシゴは一番下の段まで降りる実機準拠エッジ）
-    findAStarStep(world, startRow, startCol, goalMatchFn, heuristicGoal = null, allowHoleDrop = false) {
+    // 96マスの厳密最短経路探索（誤差ゼロ・実時間コスト準拠・下り連続ハシゴ対応）
+    findShortestPath(world, startRow, startCol, goalMatchFn, allowHoleDrop = false, allowWrap = true) {
       const rows = world.rows;
       const cols = world.cols;
       const keyOf = (r, c) => r * cols + c;
@@ -142,21 +142,15 @@
         return { found: true, row: startRow, col: startCol, cost: 0, firstBits: 0 };
       }
 
-      const hVal = (r, c) => {
-        if (!heuristicGoal) return 0;
-        return Math.abs(c - heuristicGoal.col) + Math.abs(r - heuristicGoal.row) * 2;
-      };
+      const dist = new Float64Array(rows * cols);
+      dist.fill(1e9);
+      dist[startKey] = 0;
 
-      const gScore = new Float64Array(rows * cols);
-      gScore.fill(1e9);
-      gScore[startKey] = 0;
-
-      const closed = new Uint8Array(rows * cols);
+      const visited = new Uint8Array(rows * cols);
       const open = [{
         r: startRow,
         c: startCol,
         g: 0,
-        f: hVal(startRow, startCol),
         firstBits: 0
       }];
 
@@ -170,12 +164,12 @@
       while (open.length > 0) {
         let bestIdx = 0;
         for (let i = 1; i < open.length; i++) {
-          if (open[i].f < open[bestIdx].f) bestIdx = i;
+          if (open[i].g < open[bestIdx].g) bestIdx = i;
         }
         const cur = open.splice(bestIdx, 1)[0];
         const curKey = keyOf(cur.r, cur.c);
-        if (closed[curKey]) continue;
-        closed[curKey] = 1;
+        if (visited[curKey]) continue;
+        visited[curKey] = 1;
 
         if (curKey !== startKey && goalMatchFn(cur.r, cur.c)) {
           return {
@@ -190,7 +184,7 @@
         const r = cur.r;
         const c = cur.c;
 
-        // 1. 横移動
+        // 1. 横移動 (実時間ベース: 通常1マス = 1.0, 端ループ跨ぎ = 3.0)
         const horizDirs = [
           { dc: -1, bit: LEFT },
           { dc: 1, bit: RIGHT }
@@ -200,6 +194,7 @@
           for (let i = 0; i < horizDirs.length; i++) {
             const rawNc = c + horizDirs[i].dc;
             const wrapped = rawNc < 0 || rawNc >= cols;
+            if (wrapped && !allowWrap) continue;
             const nc = world.wrapCol(rawNc);
             const nextT = world.getTile(r, nc);
             if (isSolidDrum(nextT) || nextT === TILE.DRUM_FALLING) continue;
@@ -211,57 +206,54 @@
                 landR += 1;
               }
               if (isSolidDrum(world.getTile(landR, nc))) continue;
-              const dropCost = cur.g + 6 + (landR - r) * 2;
+              const dropCost = cur.g + 8.0 + (landR - r) * 2.5;
               const lk = keyOf(landR, nc);
-              if (dropCost < gScore[lk]) {
-                gScore[lk] = dropCost;
+              if (dropCost < dist[lk]) {
+                dist[lk] = dropCost;
                 open.push({
                   r: landR,
                   c: nc,
                   g: dropCost,
-                  f: dropCost + hVal(landR, nc),
                   firstBits: cur.firstBits || horizDirs[i].bit
                 });
               }
               continue;
             }
 
-            const stepCost = wrapped ? 1.2 : 1.0;
+            const stepCost = wrapped ? 3.0 : 1.0;
             const ng = cur.g + stepCost;
             const nk = keyOf(r, nc);
-            if (ng < gScore[nk]) {
-              gScore[nk] = ng;
+            if (ng < dist[nk]) {
+              dist[nk] = ng;
               open.push({
                 r,
                 c: nc,
                 g: ng,
-                f: ng + hVal(r, nc),
                 firstBits: cur.firstBits || horizDirs[i].bit
               });
             }
           }
         }
 
-        // 2. 上へハシゴ移動
+        // 2. 上へハシゴ移動 (1段 = 約2.5マス分の時間コスト)
         if (r > 0 && isLadderTile(world.getTile(r, c))) {
           const upT = world.getTile(r - 1, c);
           if (!isSolidDrum(upT) && upT !== TILE.DRUM_FALLING && !isFallHoleTile(upT)) {
-            const ng = cur.g + 2.0;
+            const ng = cur.g + 2.5;
             const uk = keyOf(r - 1, c);
-            if (ng < gScore[uk]) {
-              gScore[uk] = ng;
+            if (ng < dist[uk]) {
+              dist[uk] = ng;
               open.push({
                 r: r - 1,
                 c,
                 g: ng,
-                f: ng + hVal(r - 1, c),
                 firstBits: cur.firstBits || UP
               });
             }
           }
         }
 
-        // 3. 下へハシゴ移動（連続ハシゴは一番下まで）
+        // 3. 下へハシゴ移動（連続ハシゴは一番下まで降り切る実機準拠エッジ）
         if (r < rows - 1 && isLadderTile(world.getTile(r + 1, c)) && isStandableFloor(r, c)) {
           let endR = r + 1;
           let blocked = false;
@@ -276,15 +268,14 @@
           if (!blocked) {
             const endT = world.getTile(endR, c);
             if (!isSolidDrum(endT) && endT !== TILE.DRUM_FALLING && !(endR < rows - 1 && isFallHoleTile(endT))) {
-              const ng = cur.g + 2.0 * (endR - r);
+              const ng = cur.g + 2.5 * (endR - r);
               const dk = keyOf(endR, c);
-              if (ng < gScore[dk]) {
-                gScore[dk] = ng;
+              if (ng < dist[dk]) {
+                dist[dk] = ng;
                 open.push({
                   r: endR,
                   c,
                   g: ng,
-                  f: ng + hVal(endR, c),
                   firstBits: cur.firstBits || DOWN
                 });
               }
@@ -469,8 +460,8 @@
       hu.bits = bits;
     }
 
-    moveTowardGoalCached(world, hu, goalRow, goalCol) {
-      const gKey = goalRow + "," + goalCol;
+    moveTowardGoalCached(world, hu, goalRow, goalCol, allowHoleDrop = false) {
+      const gKey = goalRow + "," + goalCol + "," + (allowHoleDrop ? 1 : 0);
       const cache = this.pathCache;
       if (cache &&
           cache.row === hu.row &&
@@ -482,37 +473,74 @@
         return true;
       }
 
-      const res = this.findAStarStep(
+      let res = this.findShortestPath(
         world,
         hu.row,
         hu.col,
         (r, c) => r === goalRow && c === goalCol,
-        { row: goalRow, col: goalCol },
+        allowHoleDrop,
         false
       );
+      if (!res.found) {
+        res = this.findShortestPath(
+          world,
+          hu.row,
+          hu.col,
+          (r, c) => r === goalRow && c === goalCol,
+          allowHoleDrop,
+          true
+        );
+      }
+
       this.pathCache = {
         row: hu.row,
         col: hu.col,
         goalKey: gKey,
         tick: world.f,
         found: res.found,
-        bits: res.firstBits
+        bits: res.firstBits,
+        cost: res.cost || 0
       };
       if (!res.found) return false;
       this.stepToBits(hu, res.firstBits);
       return true;
     }
 
+    // 進みたい段へ「逆方向に回り込んだりせず」素直に近づけるか確認
+    canMoveCleanlyToHeightRow(world, hu, targetRow) {
+      const res = this.findShortestPath(
+        world,
+        hu.row,
+        hu.col,
+        (r, c) => r === targetRow && isBattleHittableDestroyTile(world, r, c),
+        false,
+        false
+      );
+      if (!res.found) return null;
+      // 上の段へ行きたいのに下向き、下へ行きたいのに上向きの大迂回が必要なら進めない扱いとする
+      const wantDir = targetRow < hu.row ? UP : DOWN;
+      const oppDir = targetRow < hu.row ? DOWN : UP;
+      if ((res.firstBits & oppDir) !== 0) return null;
+      // 反対側の段を一度またぐような遠回り（段差*2.5 + 横16以上相当）も素直に進めない扱い
+      const maxReasonable = Math.abs(targetRow - hu.row) * 2.5 + 14;
+      if (res.cost > maxReasonable && (res.firstBits & wantDir) === 0) {
+        return null;
+      }
+      return { row: res.row, col: res.col, firstBits: res.firstBits };
+    }
+
     // A* で最短（実移動コスト最小）のドア除く破壊可能オブジェを探し、自力で殴るまでロック継続
     acquireAndFollowAStarTarget(world, hu) {
+      // 移動中に今立っているマス自体に叩ける破壊可能オブジェがあるなら（それが最短達成！）即殴る
+      if (isBattleHittableDestroyTile(world, hu.row, hu.col)) {
+        this.wantHammerCell = { row: hu.row, col: hu.col, isLock: true };
+        return true;
+      }
+
       if (this.aStarLockTarget) {
         const at = this.aStarLockTarget;
         if (isBattleHittableDestroyTile(world, at.row, at.col)) {
-          if (hu.row === at.row && hu.col === at.col) {
-            this.wantHammerCell = { row: at.row, col: at.col, isLock: true };
-            return true;
-          }
-          if (this.moveTowardGoalCached(world, hu, at.row, at.col)) {
+          if (this.moveTowardGoalCached(world, hu, at.row, at.col, !!at.allowHoleDrop)) {
             return true;
           }
         }
@@ -520,32 +548,40 @@
         this.pathCache = null;
       }
 
-      let res = this.findAStarStep(
+      let usedHoleDrop = false;
+      let res = this.findShortestPath(
         world,
         hu.row,
         hu.col,
         (r, c) => isBattleHittableDestroyTile(world, r, c),
-        null,
+        false,
         false
       );
       if (!res.found) {
-        res = this.findAStarStep(
+        res = this.findShortestPath(
           world,
           hu.row,
           hu.col,
           (r, c) => isBattleHittableDestroyTile(world, r, c),
-          null,
+          false,
+          true
+        );
+      }
+      if (!res.found) {
+        usedHoleDrop = true;
+        res = this.findShortestPath(
+          world,
+          hu.row,
+          hu.col,
+          (r, c) => isBattleHittableDestroyTile(world, r, c),
+          true,
           true
         );
       }
       if (!res.found) return false;
 
-      this.aStarLockTarget = { row: res.row, col: res.col };
-      if (hu.row === res.row && hu.col === res.col) {
-        this.wantHammerCell = { row: res.row, col: res.col, isLock: true };
-      } else {
-        this.stepToBits(hu, res.firstBits);
-      }
+      this.aStarLockTarget = { row: res.row, col: res.col, allowHoleDrop: usedHoleDrop };
+      this.stepToBits(hu, res.firstBits);
       return true;
     }
 
@@ -569,7 +605,6 @@
         return true;
       }
 
-      // State 2 (はしご昇降中): 1段を登り切る・降り切るまで縦方向を維持（誤反転防止で閾値24F）
       if (hu.state === 2) {
         let vDir = hu.dir & (UP | DOWN);
         if (vDir === 0) vDir = UP;
@@ -588,7 +623,6 @@
         return true;
       }
 
-      // State 6 (連続ハシゴの段切り替わり): A*の一歩目が横の時だけ横へ出る
       if (hu.state === 6) {
         this.lastClimbY = null;
         this.climbStuckFrames = 0;
@@ -600,13 +634,13 @@
           let exitBits = 0;
           if (checkGoal && checkGoal.row === floorRow) {
             if (checkGoal.col !== hu.col) {
-              const res = this.findAStarStep(
+              const res = this.findShortestPath(
                 world,
                 floorRow,
                 hu.col,
                 (r, c) => r === checkGoal.row && c === checkGoal.col,
-                checkGoal,
-                false
+                !!checkGoal.allowHoleDrop,
+                true
               );
               if (res.found && (res.firstBits & (LEFT | RIGHT)) !== 0) {
                 exitBits = res.firstBits;
@@ -638,7 +672,6 @@
       return false;
     }
 
-    // プレイヤーと隣または同じマスにいて、破壊可能オブジェがある場合の最優先ターゲット
     findAdjacentPlayerAttackTarget(world, hu, pl) {
       if (!pl || pl.row !== hu.row) return null;
       if (pl.state === 10 || pl.state === 11 || pl.state === 15 || pl.state === 16) {
@@ -738,11 +771,11 @@
         }
       }
 
-      // 段移動中の目標ロック（ハシゴ上り下りの途中で迷って引き返すループを防止）
+      // 段移動中の目標ロック（目標の段に着いたら解除、途中に足元に壊せる物があれば止まって処理可）
       if (this.routeTarget) {
         const rt = this.routeTarget;
         if (hu.row !== rt.row && isBattleHittableDestroyTile(world, rt.row, rt.col)) {
-          if (this.moveTowardGoalCached(world, hu, rt.row, rt.col)) {
+          if (this.moveTowardGoalCached(world, hu, rt.row, rt.col, false)) {
             return;
           }
         }
@@ -752,22 +785,30 @@
       // === 水平（同じ段）にドアを除く破壊可能オブジェがない時 ===
       if (!this.hasAnyDestroyTargetOnRow(world, hu.row)) {
         const heightRows = this.getClosestHeightRows(world, hu.row);
-        let moved = false;
-        for (let i = 0; i < heightRows.length; i++) {
-          const targetRow = heightRows[i];
-          const target = this.findNearestRowDestroyTarget(world, targetRow, hu.col);
-          if (target && this.moveTowardGoalCached(world, hu, target.row, target.col)) {
-            this.routeTarget = { row: target.row, col: target.col };
-            moved = true;
-            break;
+        if (heightRows.length > 0) {
+          // 最も近い高さ（上優先）へ素直に進めるか確認
+          const primaryRow = heightRows[0];
+          const clean = this.canMoveCleanlyToHeightRow(world, hu, primaryRow);
+          if (clean) {
+            this.routeTarget = { row: clean.row, col: clean.col };
+            this.stepToBits(hu, clean.firstBits);
+            return;
+          }
+          // 上と下が同距離で上に行けない場合のみ、もう一方の同距離段を確認
+          if (heightRows.length > 1 && Math.abs(heightRows[1] - hu.row) === Math.abs(primaryRow - hu.row)) {
+            const altClean = this.canMoveCleanlyToHeightRow(world, hu, heightRows[1]);
+            if (altClean) {
+              this.routeTarget = { row: altClean.row, col: altClean.col };
+              this.stepToBits(hu, altClean.firstBits);
+              return;
+            }
           }
         }
-        // 進みたい高さにも進めない時は最低優先でA*発動（ドア以外を自力で殴るまで継続）
-        if (!moved) {
-          if (!this.acquireAndFollowAStarTarget(world, hu)) {
-            if ((world.f & 1) === 1) {
-              world.hunterAI.update(world);
-            }
+
+        // 進みたい高さに進めない時は最低優先でA*発動（ドア以外を自力で殴るまで継続）
+        if (!this.acquireAndFollowAStarTarget(world, hu)) {
+          if ((world.f & 1) === 1) {
+            world.hunterAI.update(world);
           }
         }
         return;
@@ -780,7 +821,7 @@
       if (bombTarget) {
         if (hu.row === bombTarget.row && hu.col === bombTarget.col) {
           this.wantHammerCell = { row: bombTarget.row, col: bombTarget.col, isLock: true };
-        } else if (!this.moveTowardGoalCached(world, hu, bombTarget.row, bombTarget.col)) {
+        } else if (!this.moveTowardGoalCached(world, hu, bombTarget.row, bombTarget.col, false)) {
           this.acquireAndFollowAStarTarget(world, hu);
         }
         return;
@@ -795,7 +836,7 @@
             col: backBreakTarget.col,
             isLock: isBattleDestroyTargetTile(backBreakTarget.tile)
           };
-        } else if (!this.moveTowardGoalCached(world, hu, backBreakTarget.row, backBreakTarget.col)) {
+        } else if (!this.moveTowardGoalCached(world, hu, backBreakTarget.row, backBreakTarget.col, false)) {
           this.acquireAndFollowAStarTarget(world, hu);
         }
         return;
@@ -812,7 +853,7 @@
       if (horizTarget) {
         if (this.canWalkDirectlyOnRow(world, hu.row, hu.col, horizTarget.col)) {
           hu.bits = horizTarget.col < hu.col ? LEFT : RIGHT;
-        } else if (this.moveTowardGoalCached(world, hu, horizTarget.row, horizTarget.col)) {
+        } else if (this.moveTowardGoalCached(world, hu, horizTarget.row, horizTarget.col, false)) {
           this.routeTarget = { row: horizTarget.row, col: horizTarget.col };
         } else {
           this.acquireAndFollowAStarTarget(world, hu);
