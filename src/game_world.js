@@ -19,12 +19,15 @@
     HAMMER,
     COLLAPSE_STAGE_FRAMES,
     COLLAPSE_TOTAL_FRAMES,
+    COLLAPSE_HIT_FRAMES,
     TILE,
     isBreakableTile,
     isClearTargetTile,
     isLadderTile,
     isCrumblingLadderTile,
+    isDoorOpeningTile,
     isDoorRelatedTile,
+    isHoleTile,
     isSameLadderType,
     isEdgeSafeCol,
     getPillarFallPayload,
@@ -41,6 +44,15 @@
       return n;
     }
     return 30;
+  }
+
+  function isBattleCountedTile(t) {
+    return t === TILE.WALL_1 ||
+      t === TILE.WALL_2 || t === 0x91 ||
+      t === TILE.WALL_3 || t === 0xa2 || t === 0xa1 ||
+      t === TILE.BOMB ||
+      t === TILE.PILLAR ||
+      t === TILE.BREAK_LADDER;
   }
 
   class GameWorld {
@@ -101,6 +113,12 @@
       this.introFrame = 0;
       this.startBannerTimer = 0;
       this.snapCameraRequested = false;
+
+      this.isBattleMode = !!config.isBattleMode;
+      const BattleMgrClass = G.BattleManager || (root.BreakerGame && root.BreakerGame.BattleManager);
+      this.battleManager = (this.isBattleMode && typeof BattleMgrClass === "function")
+        ? new BattleMgrClass(config.battleOptions || {})
+        : null;
 
       this.totalKeys = 0;
       this.collectedKeys = 0;
@@ -461,17 +479,25 @@
 
     countBreakables() {
       let count = 0;
+      const checkFn = this.isBattleMode ? isBattleCountedTile : isClearTargetTile;
       for (let i = 0; i < this.tiles.length; i++) {
-        if (isClearTargetTile(this.tiles[i])) {
+        if (checkFn(this.tiles[i])) {
           count += 1;
         }
       }
       for (let i = 0; i < this.fallingPillars.length; i++) {
-        if (isClearTargetTile(this.fallingPillars[i].payloadTile)) {
+        if (checkFn(this.fallingPillars[i].payloadTile)) {
           count += 1;
         }
       }
       return count;
+    }
+
+    isBattleClearConditionMet() {
+      return this.countBreakables() === 0 &&
+        this.crumblingLadders.size === 0 &&
+        this.pillarBreaks.size === 0 &&
+        this.waves.length === 0;
     }
 
     openDoor(row, col, byPlayer = true, openDuration = 0x50) {
@@ -592,6 +618,14 @@
             this.crumblingLadders.delete(this.cellKey(e.row, e.col));
             this.setTile(e.row, e.col, e.hasBelowSame ? TILE.HOLE_CRUMBLED : TILE.EMPTY);
             this.breakEffects.push({ row: e.row, col: e.col, tile: TILE.BREAK_LADDER, timer: 16, maxTimer: 16 });
+            if (this.battleManager) {
+              this.battleManager.onEvent({
+                type: "ladderDestroyed",
+                row: e.row,
+                col: e.col,
+                byPlayer: !!e.byPlayer
+              });
+            }
           } else {
             this.setTile(e.row, e.col, 0x50 + e.stage);
           }
@@ -665,6 +699,14 @@
             this.pillarBreaks.delete(this.cellKey(e.row, e.col));
             this.setTile(e.row, e.col, TILE.EMPTY);
             this.breakEffects.push({ row: e.row, col: e.col, tile: TILE.PILLAR, timer: 14, maxTimer: 14 });
+            if (this.battleManager) {
+              this.battleManager.onEvent({
+                type: "pillarDestroyed",
+                row: e.row,
+                col: e.col,
+                byPlayer: !!e.byPlayer
+              });
+            }
           } else {
             e.timer = COLLAPSE_STAGE_FRAMES;
             this.setTile(e.row, e.col, 0x70 + e.stage);
@@ -711,6 +753,14 @@
 
       if (tile === TILE.BOMB) {
         this.triggerBomb(row, c, byPlayer);
+        if (this.battleManager) {
+          this.battleManager.onEvent({
+            type: "bombExploded",
+            row,
+            col: c,
+            byPlayer: !!byPlayer
+          });
+        }
         return true;
       }
 
@@ -719,7 +769,16 @@
       }
 
       if (tile === TILE.DOOR) {
-        return this.openDoor(row, c, byPlayer, 0x50);
+        const opened = this.openDoor(row, c, byPlayer, 0x50);
+        if (opened && this.battleManager) {
+          this.battleManager.onEvent({
+            type: "doorOpened",
+            row,
+            col: c,
+            byPlayer: !!byPlayer
+          });
+        }
+        return opened;
       }
 
       if (tile === TILE.PILLAR) {
@@ -741,6 +800,15 @@
           kind: "wall",
           byPlayer: !!byPlayer
         });
+        if (this.battleManager) {
+          this.battleManager.onEvent({
+            type: "wallDestroyed",
+            tile,
+            row,
+            col: c,
+            byPlayer: !!byPlayer
+          });
+        }
       }
       return true;
     }
@@ -849,6 +917,7 @@
           continue;
         }
 
+        const waveByPlayer = this.isBattleMode ? (w.byPlayer !== false) : true;
         const t = this.getTile(w.row, w.col);
         if (isDoorRelatedTile(t) || t === TILE.TIMED_BOMB) {
           if (w.stepsLeft > 1) {
@@ -858,19 +927,19 @@
               dir: w.dir,
               timer: 10,
               stepsLeft: w.stepsLeft - 1,
-              byPlayer: true
+              byPlayer: waveByPlayer
             });
           }
           continue;
         }
         if (!isBreakableTile(t)) continue;
 
-        this.hitCell(w.row, w.col, true);
+        this.hitCell(w.row, w.col, waveByPlayer);
 
         if (t !== TILE.BOMB) {
           const afterTile = this.getTile(w.row, w.col);
           if (t === TILE.BREAK_LADDER || afterTile !== TILE.EMPTY) {
-            this.explosions.push({ row: w.row, col: w.col, timer: 10, maxTimer: 10, age: 0, kind: "spark", byPlayer: true });
+            this.explosions.push({ row: w.row, col: w.col, timer: 10, maxTimer: 10, age: 0, kind: "spark", byPlayer: waveByPlayer });
           }
         }
         if (w.stepsLeft > 1) {
@@ -880,11 +949,85 @@
             dir: w.dir,
             timer: 10,
             stepsLeft: w.stepsLeft - 1,
-            byPlayer: true
+            byPlayer: waveByPlayer
           });
         }
       }
       this.waves = nextWaves.concat(this.waves);
+    }
+
+    resolveEnemyKnockdownAttacker(e, prev) {
+      let checkRow = e.row;
+      if (prev.state === 2) {
+        const curT = this.getTile(e.row, e.col);
+        if (curT === TILE.HOLE_PILLAR_LAD || ((e.y & 0x0f) !== 0 && (e.y & 0x10) !== 0)) {
+          checkRow = Math.min(this.rows - 1, e.row + 1);
+        }
+      }
+      const enemySide = e.isBack ? 1 : 0;
+
+      if (this.explosions && this.explosions.length > 0) {
+        for (let i = 0; i < this.explosions.length; i++) {
+          const ex = this.explosions[i];
+          if (ex.col !== e.col || ex.row !== checkRow) continue;
+          if (ex.kind === "bomb") {
+            const attackerSide = ex.byPlayer ? 0 : 1;
+            if (ex.indiscriminate || ex.age >= 21 || enemySide !== attackerSide) {
+              return !!ex.byPlayer;
+            }
+          } else if (ex.kind === "wall") {
+            const attackerSide = ex.byPlayer ? 0 : 1;
+            if (ex.age < COLLAPSE_HIT_FRAMES && enemySide !== attackerSide) {
+              return !!ex.byPlayer;
+            }
+          }
+        }
+      }
+
+      const tile = this.getTile(checkRow, e.col);
+      const isDangerLadderInfo = (r, c) => {
+        const lt = this.getTile(r, c);
+        if (!isCrumblingLadderTile(lt)) return null;
+        const info = this.getCrumblingInfo(r, c);
+        const stage = info ? info.stage : (lt & 0x07);
+        return stage <= 2 ? info : null;
+      };
+
+      const curDanger = isDangerLadderInfo(checkRow, e.col);
+      if (curDanger && checkRow < this.rows - 1) {
+        const belowDanger = isDangerLadderInfo(checkRow + 1, e.col);
+        if (belowDanger) {
+          return curDanger ? !!curDanger.byPlayer : true;
+        }
+      }
+
+      if (isHoleTile(tile) && checkRow < this.rows - 1) {
+        const belowDanger = isDangerLadderInfo(checkRow + 1, e.col);
+        if (belowDanger) {
+          return !!belowDanger.byPlayer;
+        }
+      }
+
+      if (!(e.flag & 2)) {
+        if (isDoorOpeningTile(tile)) {
+          return (tile & 0x08) === 0;
+        }
+        if (this.pillarBreaks && this.pillarBreaks.size > 0) {
+          const pInfo = this.getPillarBreakInfo(checkRow, e.col);
+          if (pInfo && pInfo.stage >= 2) {
+            return !!pInfo.byPlayer;
+          }
+        }
+        if (isCrumblingLadderTile(tile)) {
+          const info = this.getCrumblingInfo(checkRow, e.col);
+          const stage = info ? info.stage : (tile & 0x07);
+          if (stage >= 2) {
+            return info ? !!info.byPlayer : true;
+          }
+        }
+      }
+
+      return true;
     }
 
     updateHunterHammer() {
@@ -1291,6 +1434,11 @@
         return;
       }
 
+      if (this.battleManager && this.battleManager.ended) {
+        this.battleManager.stepResult();
+        return;
+      }
+
       if (this.playerDead) {
         this.updatePlayerDeath();
         return;
@@ -1314,12 +1462,14 @@
 
       this.player.bits = (b & ~HAMMER) | (hammerEdge ? HAMMER : 0);
 
-      this.updateAllBackStop();
+      if (!this.isBattleMode) {
+        this.updateAllBackStop();
+      }
       if (!this.allBackStop) {
         this.updateTimedBombs();
       }
       this.stepper.step(this.player, this);
-      if (!this.tryAgainActive) {
+      if (!this.tryAgainActive && !this.isBattleMode) {
         this.updateKeyAndShoePickups();
       }
       if (this.player.state === 1) {
@@ -1327,17 +1477,24 @@
       } else {
         this.player.walkFrames = 0;
       }
-      if (!this.stageCleared && !this.tryAgainActive && this.isStageClearConditionMet()) {
+      if (!this.isBattleMode && !this.stageCleared && !this.tryAgainActive && this.isStageClearConditionMet()) {
         this.startStageClear();
       }
 
       if (!this.allBackStop) {
         this.updateEnemyCollisions();
         if (this.hunter) {
-          if (this.f % 2 === 1) {
-            this.hunterAI.update(this);
+          if (this.battleManager) {
+            if (this.f % 2 === 1) {
+              this.battleManager.hunterAI.update(this);
+            }
+            this.battleManager.hunterAI.updateHammer(this);
+          } else {
+            if (this.f % 2 === 1) {
+              this.hunterAI.update(this);
+            }
+            this.updateHunterHammer();
           }
-          this.updateHunterHammer();
           this.stepper.step(this.hunter, this);
           if (this.hunter.state === 1) {
             this.hunter.walkFrames = (this.hunter.walkFrames || 0) + 1;
@@ -1346,12 +1503,62 @@
           }
         }
         if (this.enemyAI && this.enemies.length > 0) {
+          let enemySnap = null;
+          if (this.battleManager) {
+            enemySnap = this.enemies.map(e => ({
+              isBack: !!e.isBack,
+              state: e.state,
+              row: e.row,
+              col: e.col,
+              y: e.y
+            }));
+          }
           this.enemyAI.updateAll(this);
+          if (this.battleManager && enemySnap) {
+            for (let i = 0; i < this.enemies.length; i++) {
+              const e = this.enemies[i];
+              const prev = enemySnap[i];
+              if (!prev.isBack && e.isBack) {
+                const door = this.doorMap.get(this.cellKey(e.row, e.col));
+                this.battleManager.onEvent({
+                  type: "enemyBackEntered",
+                  row: e.row,
+                  col: e.col,
+                  byPlayer: door ? !!door.byPlayer : true
+                });
+              }
+              if (prev.state !== 10 && e.state === 10) {
+                const attackerIsPlayer = this.resolveEnemyKnockdownAttacker(e, prev);
+                this.battleManager.onEvent({
+                  type: "enemyKnockedDown",
+                  row: e.row,
+                  col: e.col,
+                  byPlayer: attackerIsPlayer
+                });
+              }
+            }
+          }
         }
         this.updateOrb();
       }
 
       this.updateEffectsAndWaves();
+
+      if (this.battleManager) {
+        this.battleManager.updatePopups();
+        if (this.isBattleClearConditionMet()) {
+          this.battleManager.finish("ALL CLEAR!");
+          return;
+        }
+        this.battleManager.remainFrames -= 1;
+        if (this.battleManager.remainFrames <= 0) {
+          this.battleManager.remainFrames = 0;
+          this.battleManager.finish("TIME UP!");
+          return;
+        }
+        this.f += 1;
+        return;
+      }
 
       if (!this.stageCleared && !this.tryAgainActive && this.isStageClearConditionMet()) {
         this.startStageClear();
