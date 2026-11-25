@@ -1,6 +1,7 @@
 (function (root) {
   "use strict";
 
+  // プレイ中のポップアップ点数用（従来の5x7細字フォント）
   const FONT_5X7 = {
     A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
     B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
@@ -44,6 +45,52 @@
     ":": ["00000", "00100", "00100", "00000", "00100", "00100", "00000"],
     "-": ["00000", "00000", "00000", "11111", "00000", "00000", "00000"],
     " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"]
+  };
+
+  // HUD・リザルト用（本編バナーと同じ7x7太字ファミコン仕様フォント）
+  const FONT_7X7 = {
+    A: ["0011100", "0111110", "1100011", "1100011", "1111111", "1100011", "1100011"],
+    B: ["1111110", "1100011", "1100011", "1111110", "1100011", "1100011", "1111110"],
+    C: ["0111110", "1100011", "1100000", "1100000", "1100000", "1100011", "0111110"],
+    D: ["1111100", "1100110", "1100011", "1100011", "1100011", "1100110", "1111100"],
+    E: ["1111111", "1100000", "1100000", "1111110", "1100000", "1100000", "1111111"],
+    F: ["1111111", "1100000", "1100000", "1111110", "1100000", "1100000", "1100000"],
+    G: ["0111110", "1100011", "1100000", "1101111", "1100011", "1100011", "0111110"],
+    H: ["1100011", "1100011", "1100011", "1111111", "1100011", "1100011", "1100011"],
+    I: ["0111110", "0011100", "0011100", "0011100", "0011100", "0011100", "0111110"],
+    J: ["0011111", "0001100", "0001100", "0001100", "1101100", "1101100", "0111000"],
+    K: ["1100011", "1100110", "1101100", "1111000", "1101100", "1100110", "1100011"],
+    L: ["1100000", "1100000", "1100000", "1100000", "1100000", "1100000", "1111111"],
+    M: ["1100011", "1110111", "1111111", "1101011", "1100011", "1100011", "1100011"],
+    N: ["1100011", "1110011", "1111011", "1101111", "1100111", "1100011", "1100011"],
+    O: ["0111110", "1100011", "1100011", "1100011", "1100011", "1100011", "0111110"],
+    P: ["1111110", "1100011", "1100011", "1111110", "1100000", "1100000", "1100000"],
+    Q: ["0111110", "1100011", "1100011", "1100011", "1101011", "1100110", "0111101"],
+    R: ["1111110", "1100011", "1100011", "1111110", "1101100", "1100110", "1100011"],
+    S: ["0111110", "1100011", "1100000", "0111110", "0000011", "1100011", "0111110"],
+    T: ["1111111", "0011100", "0011100", "0011100", "0011100", "0011100", "0011100"],
+    U: ["1100011", "1100011", "1100011", "1100011", "1100011", "1100011", "0111110"],
+    V: ["1100011", "1100011", "1100011", "1100011", "0110110", "0111110", "0011100"],
+    W: ["1100011", "1100011", "1100011", "1101011", "1111111", "1110111", "1100011"],
+    X: ["1100011", "1100011", "0110110", "0011100", "0110110", "1100011", "1100011"],
+    Y: ["1100011", "1100011", "0110110", "0011100", "0011100", "0011100", "0011100"],
+    Z: ["1111111", "0000111", "0001110", "0011100", "0111000", "1110000", "1111111"],
+    "0": ["0111110", "1100011", "1100111", "1101011", "1110011", "1100011", "0111110"],
+    "1": ["0011100", "0111100", "0011100", "0011100", "0011100", "0011100", "0111110"],
+    "2": ["0111110", "1100011", "0000011", "0011110", "0111000", "1100000", "1111111"],
+    "3": ["0111110", "1100011", "0000011", "0011110", "0000011", "1100011", "0111110"],
+    "4": ["0001110", "0011110", "0110110", "1100110", "1111111", "0000110", "0000110"],
+    "5": ["1111111", "1100000", "1111110", "0000011", "0000011", "1100011", "0111110"],
+    "6": ["0111110", "1100000", "1100000", "1111110", "1100011", "1100011", "0111110"],
+    "7": ["1111111", "1100011", "0000011", "0000110", "0001100", "0001100", "0001100"],
+    "8": ["0111110", "1100011", "1100011", "0111110", "1100011", "1100011", "0111110"],
+    "9": ["0111110", "1100011", "1100011", "0111111", "0000011", "0000011", "0111110"],
+    ".": ["0000000", "0000000", "0000000", "0000000", "0000000", "0011100", "0011100"],
+    "*": ["0000000", "1101011", "0111110", "1111111", "0111110", "1101011", "0000000"],
+    "!": ["0111110", "0111110", "0011100", "0011100", "0011100", "0000000", "0011100"],
+    ":": ["0000000", "0011100", "0011100", "0000000", "0011100", "0011100", "0000000"],
+    "-": ["0000000", "0000000", "0000000", "0111110", "0000000", "0000000", "0000000"],
+    " ": ["0000000", "0000000", "0000000", "0000000", "0000000", "0000000", "0000000"]
   };
 
   function padScore5(n) {
@@ -94,7 +141,7 @@
             const line = glyph[r];
             for (let c = 0; c < 5; c++) {
               if (line[c] === "1") {
-                ctx.fillRect(gx + c * scale, startY + r * scale, scale, scale);
+                ctx.fillRect(gx + c * scale, startY + r * scale + oy, scale, scale);
               }
             }
           }
@@ -108,6 +155,50 @@
         drawGlyphs(0, -d, outline);
         drawGlyphs(0, d, outline);
         drawGlyphs(d, d, outline);
+      }
+      drawGlyphs(0, 0, color);
+    },
+
+    drawPixelText7x7(ctx, text, x, y, options = {}) {
+      const str = String(text || "").toUpperCase();
+      if (!str) return;
+      const scale = options.scale || 1;
+      const color = options.color || "#ffffff";
+      const shadow = options.shadowColor !== undefined ? options.shadowColor : "#040814";
+      const align = options.align || "left";
+      const stepX = 8 * scale;
+      const totalW = Math.max(0, str.length * stepX - scale);
+
+      let startX = Math.round(x);
+      if (align === "center") {
+        startX = Math.round(x - totalW / 2);
+      } else if (align === "right") {
+        startX = Math.round(x - totalW);
+      }
+      const startY = Math.round(y);
+
+      const drawGlyphs = (ox, oy, fill) => {
+        ctx.fillStyle = fill;
+        for (let i = 0; i < str.length; i++) {
+          const glyph = FONT_7X7[str[i]] || FONT_7X7[" "];
+          const gx = startX + i * stepX + ox;
+          for (let r = 0; r < 7; r++) {
+            const line = glyph[r];
+            for (let c = 0; c < 7; c++) {
+              if (line[c] === "1") {
+                ctx.fillRect(gx + c * scale, startY + r * scale + oy, scale, scale);
+              }
+            }
+          }
+        }
+      };
+
+      // 控えめなドット影（右・下・右下のみのL字ドロップシャドウ）
+      if (shadow) {
+        const d = scale;
+        drawGlyphs(d, 0, shadow);
+        drawGlyphs(0, d, shadow);
+        drawGlyphs(d, d, shadow);
       }
       drawGlyphs(0, 0, color);
     },
@@ -142,30 +233,30 @@
       const centerX = Math.round(w / 2);
 
       // 左スコア（プレイヤー）
-      this.drawPixelText5x7(ctx, "PLAYER", 6, 3, {
+      this.drawPixelText7x7(ctx, "PLAYER", 6, 3, {
         scale: 1,
         color: "#5ce4ff",
-        outlineColor: "#040814",
+        shadowColor: "#040814",
         align: "left"
       });
-      this.drawPixelText5x7(ctx, padScore5(battle.scores.player.total), 6, 12, {
+      this.drawPixelText7x7(ctx, padScore5(battle.scores.player.total), 6, 12, {
         scale: 1,
         color: "#ffffff",
-        outlineColor: "#040814",
+        shadowColor: "#040814",
         align: "left"
       });
 
       // 右スコア（ハンター）
-      this.drawPixelText5x7(ctx, "HUNTER", w - 6, 3, {
+      this.drawPixelText7x7(ctx, "HUNTER", w - 6, 3, {
         scale: 1,
         color: "#ff724c",
-        outlineColor: "#040814",
+        shadowColor: "#040814",
         align: "right"
       });
-      this.drawPixelText5x7(ctx, padScore5(battle.scores.hunter.total), w - 6, 12, {
+      this.drawPixelText7x7(ctx, padScore5(battle.scores.hunter.total), w - 6, 12, {
         scale: 1,
         color: "#ffffff",
-        outlineColor: "#040814",
+        shadowColor: "#040814",
         align: "right"
       });
 
@@ -207,10 +298,10 @@
       } else if (battle.remainFrames <= 600) {
         timeColor = "#ffe070";
       }
-      this.drawPixelText5x7(ctx, timeStr, centerX, by + 5, {
+      this.drawPixelText7x7(ctx, timeStr, centerX, by + 5, {
         scale: 1,
         color: timeColor,
-        outlineColor: "#040814",
+        shadowColor: "#040814",
         align: "center"
       });
     },
@@ -237,10 +328,10 @@
           const midX = Math.round(w / 2);
 
           // タイトル
-          this.drawPixelText5x7(ctx, "RESULT", midX, 10, {
+          this.drawPixelText7x7(ctx, "RESULT", midX, 10, {
             scale: 2,
             color: "#ffe868",
-            outlineColor: "#000000",
+            shadowColor: "#000000",
             align: "center"
           });
 
@@ -251,16 +342,16 @@
           }
 
           // 左右プレイヤー見出し
-          this.drawPixelText5x7(ctx, "PLAYER", leftCx, 30, {
+          this.drawPixelText7x7(ctx, "PLAYER", leftCx, 30, {
             scale: 1,
             color: "#5ce4ff",
-            outlineColor: "#000000",
+            shadowColor: "#000000",
             align: "center"
           });
-          this.drawPixelText5x7(ctx, "HUNTER", rightCx, 30, {
+          this.drawPixelText7x7(ctx, "HUNTER", rightCx, 30, {
             scale: 1,
             color: "#ff724c",
-            outlineColor: "#000000",
+            shadowColor: "#000000",
             align: "center"
           });
 
@@ -277,45 +368,45 @@
           for (let i = 0; i < objRows.length; i++) {
             const row = objRows[i];
             if (t < row.at) continue;
-            this.drawPixelText5x7(ctx, row.label + padCount2(ps[row.key]), leftCx, row.y, {
+            this.drawPixelText7x7(ctx, row.label + padCount2(ps[row.key]), leftCx, row.y, {
               scale: 2,
               color: row.color,
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
-            this.drawPixelText5x7(ctx, row.label + padCount2(hs[row.key]), rightCx, row.y, {
+            this.drawPixelText7x7(ctx, row.label + padCount2(hs[row.key]), rightCx, row.y, {
               scale: 2,
               color: row.color,
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
           }
 
-          // アクション枠（敵裏入り・敵落とし・相手落とし：すべて400点）
+          // アクション枠（敵表裏移動・敵落とし・相手落とし：すべて400点）
           if (t >= 75) {
-            this.drawPixelText5x7(ctx, "ACTION", leftCx, 107, {
+            this.drawPixelText7x7(ctx, "ACTION", leftCx, 107, {
               scale: 1,
               color: "#ff90a8",
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
-            this.drawPixelText5x7(ctx, "ACTION", rightCx, 107, {
+            this.drawPixelText7x7(ctx, "ACTION", rightCx, 107, {
               scale: 1,
               color: "#ff90a8",
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
 
-            this.drawPixelText5x7(ctx, "400*" + padCount2(ps.cAction), leftCx, 117, {
+            this.drawPixelText7x7(ctx, "400*" + padCount2(ps.cAction), leftCx, 117, {
               scale: 2,
               color: "#ff90a8",
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
-            this.drawPixelText5x7(ctx, "400*" + padCount2(hs.cAction), rightCx, 117, {
+            this.drawPixelText7x7(ctx, "400*" + padCount2(hs.cAction), rightCx, 117, {
               scale: 2,
               color: "#ff90a8",
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
           }
@@ -326,29 +417,29 @@
             ctx.fillRect(14, 140, midX - 24, 2);
             ctx.fillRect(midX + 10, 140, midX - 24, 2);
 
-            this.drawPixelText5x7(ctx, "TOTAL", leftCx, 148, {
+            this.drawPixelText7x7(ctx, "TOTAL", leftCx, 148, {
               scale: 1,
               color: "#a8c0e8",
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
-            this.drawPixelText5x7(ctx, "TOTAL", rightCx, 148, {
+            this.drawPixelText7x7(ctx, "TOTAL", rightCx, 148, {
               scale: 1,
               color: "#a8c0e8",
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
 
-            this.drawPixelText5x7(ctx, padScore5(ps.total), leftCx, 160, {
+            this.drawPixelText7x7(ctx, padScore5(ps.total), leftCx, 160, {
               scale: 2,
               color: "#ffffff",
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
-            this.drawPixelText5x7(ctx, padScore5(hs.total), rightCx, 160, {
+            this.drawPixelText7x7(ctx, padScore5(hs.total), rightCx, 160, {
               scale: 2,
               color: "#ffffff",
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
           }
@@ -364,19 +455,19 @@
               winText = "HUNTER WIN!";
               winColor = ((t >> 3) & 1) ? "#ff7a52" : "#ffe080";
             }
-            this.drawPixelText5x7(ctx, winText, midX, 192, {
+            this.drawPixelText7x7(ctx, winText, midX, 192, {
               scale: 2,
               color: winColor,
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
           }
 
           if (battle.resultFinished && ((t >> 4) & 1) === 0) {
-            this.drawPixelText5x7(ctx, "PRESS HAMMER", midX, 222, {
+            this.drawPixelText7x7(ctx, "PRESS HAMMER", midX, 222, {
               scale: 1,
               color: "#b4c8e8",
-              outlineColor: "#000000",
+              shadowColor: "#000000",
               align: "center"
             });
           }
