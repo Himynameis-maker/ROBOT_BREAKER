@@ -487,7 +487,7 @@
         return;
       }
 
-      if (world.playerDead || world.clearPhase === 2) {
+      if (world.playerDead || world.clearPhase === 2 || (world.battleManager && world.battleManager.ended)) {
         this.isIntroCamMoving = false;
         return;
       }
@@ -904,6 +904,11 @@
         }
       }
 
+      // バトルモード：オブジェ上の点数ポップアップ
+      if (world.battleManager && typeof this.drawBattlePopups === "function") {
+        this.drawBattlePopups(world);
+      }
+
       // 死亡演出中のプレイヤーは一番手前（最前面）へ描画
       if (world.playerDead) {
         this.drawActor(world.player, this.fallbackPlayerSprites, w, world);
@@ -911,7 +916,14 @@
 
       ctx.restore();
 
-      if (world.tryAgainActive && world.tryAgainPhase >= 2) {
+      if (world.battleManager) {
+        if (typeof this.drawBattleHUD === "function") {
+          this.drawBattleHUD(world);
+        }
+        if (typeof this.drawBattleOverlay === "function") {
+          this.drawBattleOverlay(world);
+        }
+      } else if (world.tryAgainActive && world.tryAgainPhase >= 2) {
         // 上から下へ2.0秒(120F)かけて黒幕を下ろす（Phase 3は全画面真っ黒）
         const curtainRatio = world.tryAgainPhase === 3
           ? 1
