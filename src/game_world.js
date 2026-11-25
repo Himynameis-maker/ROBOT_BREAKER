@@ -1580,14 +1580,27 @@
             for (let i = 0; i < this.enemies.length; i++) {
               const e = this.enemies[i];
               const prev = enemySnap[i];
+              // プレイヤーは敵を表→裏に入れたら400点、ハンターは敵を裏→表に出したら400点
               if (!prev.isBack && e.isBack) {
                 const door = this.doorMap.get(this.cellKey(e.row, e.col));
-                this.battleManager.onEvent({
-                  type: "enemyBackEntered",
-                  row: e.row,
-                  col: e.col,
-                  byPlayer: door ? !!door.byPlayer : true
-                });
+                if (door && door.byPlayer) {
+                  this.battleManager.onEvent({
+                    type: "enemyBackEntered",
+                    row: e.row,
+                    col: e.col,
+                    byPlayer: true
+                  });
+                }
+              } else if (prev.isBack && !e.isBack) {
+                const door = this.doorMap.get(this.cellKey(e.row, e.col));
+                if (door && !door.byPlayer) {
+                  this.battleManager.onEvent({
+                    type: "enemyBackEntered",
+                    row: e.row,
+                    col: e.col,
+                    byPlayer: false
+                  });
+                }
               }
               if (prev.state !== 10 && e.state === 10) {
                 const attackerIsPlayer = this.resolveKnockdownAttacker(e, prev);
