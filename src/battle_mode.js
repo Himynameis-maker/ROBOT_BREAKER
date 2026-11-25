@@ -29,8 +29,26 @@
       t === TILE.BREAK_LADDER;
   }
 
+  // 連続した壊せるハシゴの上段はシステム上ハンマーを振れないため、直接叩ける対象か判定する
+  function isBattleHittableDestroyTile(world, r, c) {
+    const t = world.getTile(r, c);
+    if (!isBattleDestroyTargetTile(t)) return false;
+    if (t === TILE.BREAK_LADDER && r < world.rows - 1) {
+      if (world.getTile(r + 1, c) === TILE.BREAK_LADDER) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   function isBattleAnyActionTargetTile(t) {
     return isBattleDestroyTargetTile(t) || t === TILE.DOOR;
+  }
+
+  function isBattleHittableAnyActionTile(world, r, c) {
+    const t = world.getTile(r, c);
+    if (t === TILE.DOOR) return true;
+    return isBattleHittableDestroyTile(world, r, c);
   }
 
   function getWallDestroyPoints(tile) {
@@ -44,8 +62,8 @@
     constructor() {
       this.lockedTarget = null;
       this.aStarLockTarget = null;
+      this.routeTarget = null;
       this.wantHammerCell = null;
-      this.useNormalChase = false;
       this.pendingBombEscape = null;
       this.bombEscapeTarget = null;
       this.bombEscapeTicks = 0;
@@ -59,8 +77,8 @@
     reset() {
       this.lockedTarget = null;
       this.aStarLockTarget = null;
+      this.routeTarget = null;
       this.wantHammerCell = null;
-      this.useNormalChase = false;
       this.pendingBombEscape = null;
       this.bombEscapeTarget = null;
       this.bombEscapeTicks = 0;
@@ -75,12 +93,14 @@
       this.pendingBombEscape = { row, col };
       this.lockedTarget = null;
       this.aStarLockTarget = null;
+      this.routeTarget = null;
       this.pathCache = null;
     }
 
-    // ドア以外の何かを自力で殴った瞬間に呼ばれ、A*継続ロックを解除する
+    // ドア以外の何かを自力で殴った瞬間に呼ばれ、A*継続ロックと経路ロックを解除する
     notifyNonDoorHit() {
       this.aStarLockTarget = null;
+      this.routeTarget = null;
       this.pathCache = null;
     }
 
@@ -95,6 +115,20 @@
       return (t === TILE.LADDER && b === TILE.LADDER) ||
         (t === TILE.BREAK_LADDER && b === TILE.BREAK_LADDER) ||
         (t === TILE.SAND_LADDER && b === TILE.SAND_LADDER);
+    }
+
+    // 同じ段で、途中に穴やドラム缶を挟まず歩いて到達できるか確認
+    canWalkDirectlyOnRow(world, row, fromCol, toCol) {
+      if (fromCol === toCol) return true;
+      const step = toCol > fromCol ? 1 : -1;
+      let c = fromCol;
+      while (c !== toCol) {
+        c += step;
+        const t = world.getTile(row, c);
+        if (isSolidDrum(t) || t === TILE.DRUM_FALLING) return false;
+        if (row < world.rows - 1 && isFallHoleTile(t)) return false;
+      }
+      return true;
     }
 
     // 96マスのA*経路探索（下り連続ハシゴは一番下の段まで降りる実機準拠エッジ）
@@ -264,7 +298,7 @@
 
     hasAnyDestroyTargetOnRow(world, row) {
       for (let c = 0; c < world.cols; c++) {
-        if (isBattleDestroyTargetTile(world.getTile(row, c))) {
+        if (isBattleHittableDestroyTile(world, row, c)) {
           return true;
         }
       }
@@ -299,13 +333,13 @@
       return best;
     }
 
-    // 優先2: 同じ段の裏敵の進行方向1マス先に「破壊可能オブジェ」がある時だけトリガー（負荷配慮で2Fごと更新）
+    // 優先2: 同じ段の裏敵の進行方向1マス先に「破壊可能オブジェ」がある時だけトリガー（2Fごと更新）
     findBestBackEnemyBreakableFront(world, hu) {
       if (!world.enemies || world.enemies.length === 0) return null;
       if ((world.f - this.backFrontCheckTick) < 2 && this.backFrontCheckTick >= 0) {
         if (this.backFrontCache &&
             this.backFrontCache.row === hu.row &&
-            isBattleAnyActionTargetTile(world.getTile(this.backFrontCache.row, this.backFrontCache.col))) {
+            isBattleHittableAnyActionTile(world, this.backFrontCache.row, this.backFrontCache.col)) {
           return this.backFrontCache;
         }
         return null;
@@ -325,14 +359,13 @@
         }
         const step = (e.facing & RIGHT) ? 1 : -1;
         const frontCol = world.wrapCol(e.col + step);
-        const frontTile = world.getTile(row, frontCol);
-        if (!isBattleAnyActionTargetTile(frontTile)) {
+        if (!isBattleHittableAnyActionTile(world, row, frontCol)) {
           continue;
         }
         const dist = this.getDist(hu.col, frontCol);
         if (dist < bestDist || (dist === bestDist && best && frontCol < best.col)) {
           bestDist = dist;
-          best = { row, col: frontCol, tile: frontTile };
+          best = { row, col: frontCol, tile: world.getTile(row, frontCol) };
         }
       }
 
@@ -340,18 +373,28 @@
       return best;
     }
 
+    // 同じ段で最も近い破壊可能オブジェ（同段で直接歩ける物を優先、同距離は左優先）
     findNearestRowDestroyTarget(world, row, fromCol) {
-      let best = null;
-      let bestDist = 999;
+      let bestDirect = null;
+      let bestDirectDist = 999;
+      let bestAny = null;
+      let bestAnyDist = 999;
+
       for (let c = 0; c < world.cols; c++) {
-        if (!isBattleDestroyTargetTile(world.getTile(row, c))) continue;
+        if (!isBattleHittableDestroyTile(world, row, c)) continue;
         const dist = this.getDist(fromCol, c);
-        if (dist < bestDist || (dist === bestDist && best && c < best.col)) {
-          bestDist = dist;
-          best = { row, col: c };
+        if (this.canWalkDirectlyOnRow(world, row, fromCol, c)) {
+          if (dist < bestDirectDist || (dist === bestDirectDist && bestDirect && c < bestDirect.col)) {
+            bestDirectDist = dist;
+            bestDirect = { row, col: c };
+          }
+        }
+        if (dist < bestAnyDist || (dist === bestAnyDist && bestAny && c < bestAny.col)) {
+          bestAnyDist = dist;
+          bestAny = { row, col: c };
         }
       }
-      return best;
+      return bestDirect || bestAny;
     }
 
     getClosestHeightRows(world, fromRow) {
@@ -426,7 +469,6 @@
       hu.bits = bits;
     }
 
-    // 同じマスに留まっている間や10F以内は経路キャッシュを再利用して負荷を抑える
     moveTowardGoalCached(world, hu, goalRow, goalCol) {
       const gKey = goalRow + "," + goalCol;
       const cache = this.pathCache;
@@ -461,12 +503,11 @@
       return true;
     }
 
-    // A* で最短（実移動コスト最小）のドア除く破壊可能オブジェを探し、ロック開始する
+    // A* で最短（実移動コスト最小）のドア除く破壊可能オブジェを探し、自力で殴るまでロック継続
     acquireAndFollowAStarTarget(world, hu) {
-      // すでにロック中のターゲットがまだ存在するなら、そこへ向かい続ける
       if (this.aStarLockTarget) {
         const at = this.aStarLockTarget;
-        if (isBattleDestroyTargetTile(world.getTile(at.row, at.col))) {
+        if (isBattleHittableDestroyTile(world, at.row, at.col)) {
           if (hu.row === at.row && hu.col === at.col) {
             this.wantHammerCell = { row: at.row, col: at.col, isLock: true };
             return true;
@@ -475,7 +516,6 @@
             return true;
           }
         }
-        // 目標が先に壊されたか到達不能になったら次の最短目標を探し直す（ドア以外を殴るまで継続）
         this.aStarLockTarget = null;
         this.pathCache = null;
       }
@@ -484,7 +524,7 @@
         world,
         hu.row,
         hu.col,
-        (r, c) => isBattleDestroyTargetTile(world.getTile(r, c)),
+        (r, c) => isBattleHittableDestroyTile(world, r, c),
         null,
         false
       );
@@ -493,7 +533,7 @@
           world,
           hu.row,
           hu.col,
-          (r, c) => isBattleDestroyTargetTile(world.getTile(r, c)),
+          (r, c) => isBattleHittableDestroyTile(world, r, c),
           null,
           true
         );
@@ -529,14 +569,14 @@
         return true;
       }
 
-      // State 2 (はしご昇降中): 1段を登り切る・降り切るまで縦方向を維持して震えを根絶
+      // State 2 (はしご昇降中): 1段を登り切る・降り切るまで縦方向を維持（誤反転防止で閾値24F）
       if (hu.state === 2) {
         let vDir = hu.dir & (UP | DOWN);
         if (vDir === 0) vDir = UP;
 
         if (this.lastClimbY === hu.y) {
           this.climbStuckFrames += 1;
-          if (this.climbStuckFrames >= 8) {
+          if (this.climbStuckFrames >= 24) {
             vDir = (vDir === UP) ? DOWN : UP;
             this.climbStuckFrames = 0;
           }
@@ -548,7 +588,7 @@
         return true;
       }
 
-      // State 6 (連続ハシゴの段切り替わり): 実際の床高さで途中下車判断
+      // State 6 (連続ハシゴの段切り替わり): A*の一歩目が横の時だけ横へ出る
       if (hu.state === 6) {
         this.lastClimbY = null;
         this.climbStuckFrames = 0;
@@ -556,14 +596,36 @@
         const canExitSide = hu.prom < 10;
 
         if (canExitSide) {
-          if (this.aStarLockTarget && this.aStarLockTarget.row === floorRow) {
-            hu.bits = this.aStarLockTarget.col < hu.col ? LEFT : RIGHT;
-            return true;
-          }
-          if (!this.aStarLockTarget && this.hasAnyDestroyTargetOnRow(world, floorRow)) {
+          const checkGoal = this.aStarLockTarget || this.routeTarget;
+          let exitBits = 0;
+          if (checkGoal && checkGoal.row === floorRow) {
+            if (checkGoal.col !== hu.col) {
+              const res = this.findAStarStep(
+                world,
+                floorRow,
+                hu.col,
+                (r, c) => r === checkGoal.row && c === checkGoal.col,
+                checkGoal,
+                false
+              );
+              if (res.found && (res.firstBits & (LEFT | RIGHT)) !== 0) {
+                exitBits = res.firstBits;
+              }
+            }
+          } else if (!checkGoal && this.hasAnyDestroyTargetOnRow(world, floorRow)) {
             const target = this.findNearestRowDestroyTarget(world, floorRow, hu.col);
-            hu.bits = (target && target.col < hu.col) ? LEFT : RIGHT;
-            return true;
+            if (target && this.canWalkDirectlyOnRow(world, floorRow, hu.col, target.col)) {
+              if (target.col < hu.col) exitBits = LEFT;
+              else if (target.col > hu.col) exitBits = RIGHT;
+            }
+          }
+
+          if (exitBits !== 0) {
+            const nextCol = world.wrapCol(hu.col + ((exitBits & RIGHT) ? 1 : -1));
+            if (!isSolidDrum(world.getTile(floorRow, nextCol))) {
+              hu.bits = exitBits;
+              return true;
+            }
           }
         }
 
@@ -576,17 +638,36 @@
       return false;
     }
 
+    // プレイヤーと隣または同じマスにいて、破壊可能オブジェがある場合の最優先ターゲット
+    findAdjacentPlayerAttackTarget(world, hu, pl) {
+      if (!pl || pl.row !== hu.row) return null;
+      if (pl.state === 10 || pl.state === 11 || pl.state === 15 || pl.state === 16) {
+        return null;
+      }
+      if (Math.abs(pl.col - hu.col) > 1) return null;
+
+      if (isBattleHittableAnyActionTile(world, hu.row, hu.col)) {
+        return { row: hu.row, col: hu.col, tile: world.getTile(hu.row, hu.col) };
+      }
+      if (pl.col !== hu.col && isBattleHittableAnyActionTile(world, pl.row, pl.col)) {
+        if (this.canWalkDirectlyOnRow(world, hu.row, hu.col, pl.col)) {
+          return { row: pl.row, col: pl.col, tile: world.getTile(pl.row, pl.col) };
+        }
+      }
+      return null;
+    }
+
     update(world) {
       const hu = world.hunter;
       if (!hu) return;
       const pl = world.player;
 
       this.wantHammerCell = null;
-      this.useNormalChase = false;
 
       if (hu.state === 10 || hu.state === 11 || hu.state === 15 || hu.state === 16) {
         hu.bits = 0;
         this.lockedTarget = null;
+        this.routeTarget = null;
         this.pendingBombEscape = null;
         this.bombEscapeTarget = null;
         this.lastClimbY = null;
@@ -599,14 +680,14 @@
         return;
       }
 
-      // 最優先0-A: 爆弾を殴った後の50/50左右避難移動
+      // 最優先0-A: 爆弾を殴った直後の50/50左右避難移動
       this.startBombEscapeIfNeeded(world, hu);
       if (this.bombEscapeTarget) {
         this.bombEscapeTicks += 1;
         const esc = this.bombEscapeTarget;
         const xMod = hu.x & 0x0f;
         const arrived = hu.row === esc.row && hu.col === esc.col && (xMod <= 1 || xMod >= 15);
-        if (arrived || hu.row !== esc.row || this.bombEscapeTicks > 36) {
+        if (arrived || hu.row !== esc.row || this.bombEscapeTicks > 32) {
           this.bombEscapeTarget = null;
         } else {
           hu.bits = esc.dir;
@@ -617,8 +698,7 @@
       // 最優先0-B: 破壊し始めたら壊し切るまで止まらない
       if (this.lockedTarget) {
         const lt = this.lockedTarget;
-        const t = world.getTile(lt.row, lt.col);
-        if (hu.row === lt.row && hu.col === lt.col && isBattleDestroyTargetTile(t)) {
+        if (hu.row === lt.row && hu.col === lt.col && isBattleHittableDestroyTile(world, lt.row, lt.col)) {
           hu.bits = 0;
           this.wantHammerCell = { row: lt.row, col: lt.col, isLock: true };
           return;
@@ -626,21 +706,47 @@
         this.lockedTarget = null;
       }
 
+      // 最優先1: プレイヤーと隣または同じマスにいて、破壊可能オブジェがあるなら最優先で殴る
+      const adjPlayerTarget = this.findAdjacentPlayerAttackTarget(world, hu, pl);
+      if (adjPlayerTarget) {
+        if (hu.row === adjPlayerTarget.row && hu.col === adjPlayerTarget.col) {
+          this.wantHammerCell = {
+            row: adjPlayerTarget.row,
+            col: adjPlayerTarget.col,
+            isLock: isBattleDestroyTargetTile(adjPlayerTarget.tile)
+          };
+        } else {
+          hu.bits = adjPlayerTarget.col < hu.col ? LEFT : RIGHT;
+        }
+        return;
+      }
+
       // 全て破壊された場合は普段の追尾ロボ判断に戻る
       if (!this.hasAnyDestroyTargetInMap(world)) {
         this.aStarLockTarget = null;
-        this.useNormalChase = true;
+        this.routeTarget = null;
         if ((world.f & 1) === 1) {
           world.hunterAI.update(world);
         }
         return;
       }
 
-      // 最優先0-C: 一度A*が発動したら、ドア以外の何かを自力で殴るまでA*モードを継続
+      // A*継続モード: ドア以外の何かを自力で殴るまでA*止まらない
       if (this.aStarLockTarget) {
         if (this.acquireAndFollowAStarTarget(world, hu)) {
           return;
         }
+      }
+
+      // 段移動中の目標ロック（ハシゴ上り下りの途中で迷って引き返すループを防止）
+      if (this.routeTarget) {
+        const rt = this.routeTarget;
+        if (hu.row !== rt.row && isBattleHittableDestroyTile(world, rt.row, rt.col)) {
+          if (this.moveTowardGoalCached(world, hu, rt.row, rt.col)) {
+            return;
+          }
+        }
+        this.routeTarget = null;
       }
 
       // === 水平（同じ段）にドアを除く破壊可能オブジェがない時 ===
@@ -651,14 +757,14 @@
           const targetRow = heightRows[i];
           const target = this.findNearestRowDestroyTarget(world, targetRow, hu.col);
           if (target && this.moveTowardGoalCached(world, hu, target.row, target.col)) {
+            this.routeTarget = { row: target.row, col: target.col };
             moved = true;
             break;
           }
         }
-        // 進みたい高さへ進めない時は、最低優先としてA*を発動（ドア以外を殴るまで継続）
+        // 進みたい高さにも進めない時は最低優先でA*発動（ドア以外を自力で殴るまで継続）
         if (!moved) {
           if (!this.acquireAndFollowAStarTarget(world, hu)) {
-            this.useNormalChase = true;
             if ((world.f & 1) === 1) {
               world.hunterAI.update(world);
             }
@@ -680,7 +786,7 @@
         return;
       }
 
-      // 優先2: 同じ段の裏の敵の進行方向1マス先に破壊可能オブジェがある時だけトリガー
+      // 優先2: 同じ段の裏敵の進行方向1マス先に破壊可能オブジェがある時だけトリガー
       const backBreakTarget = this.findBestBackEnemyBreakableFront(world, hu);
       if (backBreakTarget) {
         if (hu.row === backBreakTarget.row && hu.col === backBreakTarget.col) {
@@ -695,25 +801,20 @@
         return;
       }
 
-      // 優先3: プレイヤーが水平2マス以内に入った時、通常の判断に変える
-      if (pl && pl.row === hu.row && Math.abs(pl.col - hu.col) <= 2) {
-        this.useNormalChase = true;
-        if ((world.f & 1) === 1) {
-          world.hunterAI.update(world);
-        }
-        return;
-      }
-
-      // 優先4: 自身のマス（ドア除く破壊可能オブジェ）
-      if (isBattleDestroyTargetTile(world.getTile(hu.row, hu.col))) {
+      // 優先3: 自身のマス（ドア除く破壊可能オブジェ）
+      if (isBattleHittableDestroyTile(world, hu.row, hu.col)) {
         this.wantHammerCell = { row: hu.row, col: hu.col, isLock: true };
         return;
       }
 
-      // 優先5 & 6: 最も近い左側のオブジェ > 右（同距離なら左優先）
+      // 優先4 & 5: 最も近い左側のオブジェ > 右（同距離なら左優先）
       const horizTarget = this.findNearestRowDestroyTarget(world, hu.row, hu.col);
       if (horizTarget) {
-        if (!this.moveTowardGoalCached(world, hu, horizTarget.row, horizTarget.col)) {
+        if (this.canWalkDirectlyOnRow(world, hu.row, hu.col, horizTarget.col)) {
+          hu.bits = horizTarget.col < hu.col ? LEFT : RIGHT;
+        } else if (this.moveTowardGoalCached(world, hu, horizTarget.row, horizTarget.col)) {
+          this.routeTarget = { row: horizTarget.row, col: horizTarget.col };
+        } else {
           this.acquireAndFollowAStarTarget(world, hu);
         }
         return;
@@ -725,7 +826,6 @@
     updateHammer(world) {
       const hu = world.hunter;
       if (!hu) return;
-      const pl = world.player;
 
       hu.bits &= ~HAMMER;
       if (hu.state === 2 || hu.state === 3 || hu.state === 4 ||
@@ -746,10 +846,10 @@
       if (this.wantHammerCell &&
           hu.row === this.wantHammerCell.row &&
           hu.col === this.wantHammerCell.col &&
-          isBattleAnyActionTargetTile(curTile)) {
+          isBattleHittableAnyActionTile(world, hu.row, hu.col)) {
         if (nearCenter || hu.state === 0) {
           hu.bits |= HAMMER;
-          if (this.wantHammerCell.isLock && isBattleDestroyTargetTile(curTile)) {
+          if (this.wantHammerCell.isLock && isBattleHittableDestroyTile(world, hu.row, hu.col)) {
             this.lockedTarget = { row: hu.row, col: hu.col };
           }
           return;
@@ -762,7 +862,7 @@
       if (this.lockedTarget &&
           hu.row === this.lockedTarget.row &&
           hu.col === this.lockedTarget.col &&
-          isBattleDestroyTargetTile(curTile)) {
+          isBattleHittableDestroyTile(world, hu.row, hu.col)) {
         hu.bits |= HAMMER;
         return;
       }
@@ -770,17 +870,6 @@
       // 3. 通る場所に閉じたドアがあれば殴って開ける（A*継続中でもドアを開けるだけでA*は止まらない）
       if (curTile === TILE.DOOR && (nearCenter || hu.state === 0)) {
         hu.bits |= HAMMER;
-        return;
-      }
-
-      // 4. 通常追尾判断（プレイヤー水平2マス以内）中なら、同じマスの破壊対象・ドアも殴る
-      if (this.useNormalChase && pl && hu.row === pl.row && hu.col === pl.col) {
-        if (isBattleAnyActionTargetTile(curTile)) {
-          hu.bits |= HAMMER;
-          if (isBattleDestroyTargetTile(curTile)) {
-            this.lockedTarget = { row: hu.row, col: hu.col };
-          }
-        }
       }
     }
   }
@@ -831,6 +920,8 @@
                  evt.type === "ladderDestroyed" ||
                  evt.type === "pillarDestroyed") {
         this.addScore(evt.byPlayer, 200, evt.row, evt.col);
+      } else if (evt.type === "opponentKnockedDown") {
+        this.addScore(evt.byPlayer, 400, evt.row, evt.col);
       } else if (evt.type === "enemyBackEntered" ||
                  evt.type === "enemyKnockedDown") {
         this.addScore(evt.byPlayer, 800, evt.row, evt.col);
