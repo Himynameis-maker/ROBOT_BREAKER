@@ -754,6 +754,9 @@
       if (tile === TILE.BOMB) {
         this.triggerBomb(row, c, byPlayer);
         if (this.battleManager) {
+          if (!byPlayer && this.battleManager.hunterAI && typeof this.battleManager.hunterAI.notifyBombHit === "function") {
+            this.battleManager.hunterAI.notifyBombHit(row, c);
+          }
           this.battleManager.onEvent({
             type: "bombExploded",
             row,
@@ -765,7 +768,12 @@
       }
 
       if (tile === TILE.BREAK_LADDER) {
-        return this.startCrumblingLadder(row, c, byPlayer, true, true);
+        const started = this.startCrumblingLadder(row, c, byPlayer, true, true);
+        if (started && this.battleManager && !byPlayer && this.battleManager.hunterAI &&
+            typeof this.battleManager.hunterAI.notifyNonDoorHit === "function") {
+          this.battleManager.hunterAI.notifyNonDoorHit();
+        }
+        return started;
       }
 
       if (tile === TILE.DOOR) {
@@ -782,7 +790,17 @@
       }
 
       if (tile === TILE.PILLAR) {
-        return this.triggerPillar(row, c, byPlayer);
+        const triggered = this.triggerPillar(row, c, byPlayer);
+        if (triggered && this.battleManager && !byPlayer && this.battleManager.hunterAI &&
+            typeof this.battleManager.hunterAI.notifyNonDoorHit === "function") {
+          this.battleManager.hunterAI.notifyNonDoorHit();
+        }
+        return triggered;
+      }
+
+      if (this.battleManager && !byPlayer && this.battleManager.hunterAI &&
+          typeof this.battleManager.hunterAI.notifyNonDoorHit === "function") {
+        this.battleManager.hunterAI.notifyNonDoorHit();
       }
 
       const hp = tile & 0x07;
@@ -1485,9 +1503,7 @@
         this.updateEnemyCollisions();
         if (this.hunter) {
           if (this.battleManager) {
-            if (this.f % 2 === 1) {
-              this.battleManager.hunterAI.update(this);
-            }
+            this.battleManager.hunterAI.update(this);
             this.battleManager.hunterAI.updateHammer(this);
           } else {
             if (this.f % 2 === 1) {
