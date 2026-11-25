@@ -11,6 +11,7 @@
     DOWN,
     UP,
     HAMMER,
+    COLLAPSE_HIT_FRAMES,
     TILE,
     isLadderTile,
     isFallHoleTile,
@@ -20,6 +21,7 @@
   const BATTLE_DURATION_FRAMES = 25 * 60; // 25.00秒
   const BATTLE_RESULT_INTRO_FRAMES = 48; // 終了後0.8sの静止余韻
   const HORIZ_SEARCH_RANGE = 6;          // 水平方向6マス以内のみ同段探索
+  const WALL_HIT_WAIT_FRAMES = COLLAPSE_HIT_FRAMES || 25;
 
   function isBattleDestroyTargetTile(t) {
     return t === TILE.WALL_1 ||
@@ -84,6 +86,9 @@
       this.pendingBombEscape = null;
       this.bombEscapeTarget = null;
       this.bombEscapeTicks = 0;
+      this.hp2SwingInfo = null;
+      this.wallDodgeTarget = null;
+      this.wallDodgeWaitFrames = 0;
       this.lastClimbY = null;
       this.climbStuckFrames = 0;
       this.pathCache = null;
@@ -99,6 +104,9 @@
       this.pendingBombEscape = null;
       this.bombEscapeTarget = null;
       this.bombEscapeTicks = 0;
+      this.hp2SwingInfo = null;
+      this.wallDodgeTarget = null;
+      this.wallDodgeWaitFrames = 0;
       this.lastClimbY = null;
       this.climbStuckFrames = 0;
       this.pathCache = null;
@@ -111,6 +119,9 @@
       this.lockedTarget = null;
       this.aStarLockTarget = null;
       this.routeTarget = null;
+      this.hp2SwingInfo = null;
+      this.wallDodgeTarget = null;
+      this.wallDodgeWaitFrames = 0;
       this.pathCache = null;
     }
 
@@ -492,6 +503,43 @@
       return true;
     }
 
+    // HP2の壁殴り中にプレイヤーと同マス時：1マス横の「穴か床」（ドラム缶以外）へランダムで動く
+    startWallDodge(world, hu) {
+      const r = hu.row;
+      const c = hu.col;
+      const canStep = (nc) => {
+        const t = world.getTile(r, nc);
+        return !isSolidDrum(t) && t !== TILE.DRUM_FALLING;
+      };
+
+      const leftCol = world.wrapCol(c - 1);
+      const rightCol = world.wrapCol(c + 1);
+      const okLeft = canStep(leftCol);
+      const okRight = canStep(rightCol);
+      if (!okLeft && !okRight) return false;
+
+      let chosenDir = LEFT;
+      let chosenCol = leftCol;
+      if (okLeft && okRight) {
+        if (Math.random() < 0.5) {
+          chosenDir = LEFT;
+          chosenCol = leftCol;
+        } else {
+          chosenDir = RIGHT;
+          chosenCol = rightCol;
+        }
+      } else if (okRight) {
+        chosenDir = RIGHT;
+        chosenCol = rightCol;
+      }
+
+      this.lockedTarget = null;
+      this.routeTarget = null;
+      this.wallDodgeTarget = { row: r, col: chosenCol, dir: chosenDir, ticks: 0 };
+      this.wallDodgeWaitFrames = 0;
+      return true;
+    }
+
     stepToBits(hu, bits) {
       if ((bits & (UP | DOWN)) !== 0) {
         const xMod = hu.x & 0x0f;
@@ -631,13 +679,45 @@
       return true;
     }
 
-    handleLadderAndTransitionStates(world, hu) {
+    handleLadderAndTransitionStates(world, hu, pl) {
       if (hu.state === 4) {
         hu.bits = 0;
         this.lastClimbY = null;
         this.climbStuckFrames = 0;
+
+        // HP2の壁(2回壁 0x92 または 残HP2の3回壁 0xa2)を殴っている最中かを追跡
+        if (!this.hp2SwingInfo && hu.hammerTimer <= 2) {
+          const t = world.getTile(hu.row, hu.col);
+          if (t === TILE.WALL_2 || t === 0xa2) {
+            this.hp2SwingInfo = {
+              row: hu.row,
+              col: hu.col,
+              sawPlayer: !!(pl && pl.row === hu.row && pl.col === hu.col &&
+                pl.state !== 10 && pl.state !== 11 && pl.state !== 15 && pl.state !== 16)
+            };
+          }
+        } else if (this.hp2SwingInfo &&
+                   this.hp2SwingInfo.row === hu.row &&
+                   this.hp2SwingInfo.col === hu.col) {
+          if (pl && pl.row === hu.row && pl.col === hu.col &&
+              pl.state !== 10 && pl.state !== 11 && pl.state !== 15 && pl.state !== 16) {
+            this.hp2SwingInfo.sawPlayer = true;
+          }
+        }
         return true;
       }
+
+      // 穴に落ちてState 5(落下状態)になった場合は即座に回避完了（着地後すぐ動く）
+      if (hu.state === 5) {
+        hu.bits = 0;
+        this.wallDodgeTarget = null;
+        this.wallDodgeWaitFrames = 0;
+        this.hp2SwingInfo = null;
+        this.lastClimbY = null;
+        this.climbStuckFrames = 0;
+        return true;
+      }
+
       if (hu.state === 8 || hu.state === 9) {
         hu.bits = hu.dir & (LEFT | RIGHT);
         this.lastClimbY = null;
@@ -749,17 +829,71 @@
         this.routeTarget = null;
         this.pendingBombEscape = null;
         this.bombEscapeTarget = null;
+        this.hp2SwingInfo = null;
+        this.wallDodgeTarget = null;
+        this.wallDodgeWaitFrames = 0;
         this.lastClimbY = null;
         this.climbStuckFrames = 0;
         this.pathCache = null;
         return;
       }
 
-      if (this.handleLadderAndTransitionStates(world, hu)) {
+      if (this.handleLadderAndTransitionStates(world, hu, pl)) {
         return;
       }
 
-      // 最優先0-A: 爆弾を殴った直後の50/50左右避難移動
+      // HP2の壁を殴った直後にプレイヤーが同マスにいた場合、最優先で1マス横へ移動開始
+      if (this.hp2SwingInfo) {
+        const info = this.hp2SwingInfo;
+        this.hp2SwingInfo = null;
+        if (hu.row === info.row && hu.col === info.col) {
+          const sameNow = !!(pl && pl.row === hu.row && pl.col === hu.col &&
+            pl.state !== 10 && pl.state !== 11 && pl.state !== 15 && pl.state !== 16);
+          if (info.sawPlayer || sameNow) {
+            if (this.startWallDodge(world, hu)) {
+              const wd = this.wallDodgeTarget;
+              hu.bits = wd.dir;
+              return;
+            }
+          }
+        }
+      }
+
+      // 最優先0-A: HP2壁殴り後の1マス回避移動中
+      if (this.wallDodgeTarget) {
+        this.wallDodgeTarget.ticks += 1;
+        const wd = this.wallDodgeTarget;
+        const xMod = hu.x & 0x0f;
+        const arrived = hu.row === wd.row && hu.col === wd.col && (xMod <= 1 || xMod >= 15);
+        if (arrived || hu.row !== wd.row || wd.ticks > 28) {
+          this.wallDodgeTarget = null;
+          // 移動先に壊せるオブジェがあるなら25F静止を待たずに即殴る（3->A: 何でも含める）
+          if (isBattleHittableAnyActionTile(world, hu.row, hu.col)) {
+            this.wantHammerCell = {
+              row: hu.row,
+              col: hu.col,
+              isLock: isBattleDestroyTargetTile(world.getTile(hu.row, hu.col)),
+              instantSwing: true
+            };
+            return;
+          }
+          // 何もない床なら壁の攻撃判定分(25F)その場で静止
+          this.wallDodgeWaitFrames = WALL_HIT_WAIT_FRAMES;
+          hu.bits = 0;
+          return;
+        }
+        hu.bits = wd.dir;
+        return;
+      }
+
+      // 最優先0-B: 回避先の床で壁の攻撃判定分(25F)静止中
+      if (this.wallDodgeWaitFrames > 0) {
+        this.wallDodgeWaitFrames -= 1;
+        hu.bits = 0;
+        return;
+      }
+
+      // 最優先0-C: 爆弾を殴った直後の50/50左右避難移動
       this.startBombEscapeIfNeeded(world, hu);
       if (this.bombEscapeTarget) {
         this.bombEscapeTicks += 1;
@@ -774,7 +908,7 @@
         }
       }
 
-      // 最優先0-B: 破壊し始めたら壊し切るまで止まらない
+      // 最優先0-D: 破壊し始めたら壊し切るまで止まらない
       if (this.lockedTarget) {
         const lt = this.lockedTarget;
         if (hu.row === lt.row && hu.col === lt.col && isBattleHittableDestroyTile(world, lt.row, lt.col)) {
@@ -922,13 +1056,14 @@
       if (!hu) return;
 
       hu.bits &= ~HAMMER;
-      if (hu.state === 2 || hu.state === 3 || hu.state === 4 ||
+      if (hu.state === 2 || hu.state === 3 || hu.state === 4 || hu.state === 5 ||
           hu.state === 6 || hu.state === 8 || hu.state === 9 ||
           hu.state === 10 || hu.state === 11 || hu.state === 15 || hu.state === 16) {
         return;
       }
 
-      if (this.bombEscapeTarget || this.pendingBombEscape) {
+      if (this.bombEscapeTarget || this.pendingBombEscape ||
+          this.wallDodgeTarget || this.wallDodgeWaitFrames > 0) {
         return;
       }
 
@@ -936,7 +1071,7 @@
       const xMod = hu.x & 0x0f;
       const nearCenter = xMod <= 1 || xMod >= 15;
 
-      // 1. 破壊目標セルに到達していれば殴る（敵・プレイヤー狙いの時はマスに入った瞬間即振り）
+      // 1. 破壊目標セルに到達していれば殴る（敵・プレイヤー狙い・回避先即殴りの時はマスに入った瞬間即振り）
       if (this.wantHammerCell &&
           hu.row === this.wantHammerCell.row &&
           hu.col === this.wantHammerCell.col &&
