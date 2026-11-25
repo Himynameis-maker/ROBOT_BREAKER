@@ -296,6 +296,17 @@
       return false;
     }
 
+    // 同じ段で「穴やドラム缶に遮られず直接歩いて行ける」破壊可能オブジェがあるか
+    hasAnyDirectDestroyTargetOnRow(world, row, fromCol) {
+      for (let c = 0; c < world.cols; c++) {
+        if (!isBattleHittableDestroyTile(world, row, c)) continue;
+        if (this.canWalkDirectlyOnRow(world, row, fromCol, c)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     countDestroyTargetsOnRow(world, row) {
       let count = 0;
       for (let c = 0; c < world.cols; c++) {
@@ -313,13 +324,14 @@
       return false;
     }
 
-    // 優先1: 左右どちらかに破壊可能オブジェがある爆弾
+    // 優先1: 同じ段で直接行ける「左右どちらかに破壊可能オブジェがある爆弾」
     findBestBombTarget(world, hu) {
       const row = hu.row;
       let best = null;
       let bestDist = 999;
       for (let c = 0; c < world.cols; c++) {
         if (world.getTile(row, c) !== TILE.BOMB) continue;
+        if (!this.canWalkDirectlyOnRow(world, row, hu.col, c)) continue;
         const leftT = c > 0 ? world.getTile(row, c - 1) : TILE.EMPTY;
         const rightT = c < world.cols - 1 ? world.getTile(row, c + 1) : TILE.EMPTY;
         if (!isBattleDestroyTargetTile(leftT) && !isBattleDestroyTargetTile(rightT)) {
@@ -334,14 +346,16 @@
       return best;
     }
 
-    // 優先2: 同じ段の裏敵の進行方向1マス先に「破壊可能オブジェ」がある時だけトリガー（2Fごと更新）
+    // 優先2: 同じ段の裏敵の進行方向1マス先に「破壊可能オブジェ」があり、直接歩いて行ける時だけトリガー（2Fごと更新）
     findBestBackEnemyBreakableFront(world, hu) {
       if (!world.enemies || world.enemies.length === 0) return null;
       if ((world.f - this.backFrontCheckTick) < 2 && this.backFrontCheckTick >= 0) {
-        if (this.backFrontCache &&
-            this.backFrontCache.row === hu.row &&
-            isBattleHittableAnyActionTile(world, this.backFrontCache.row, this.backFrontCache.col)) {
-          return this.backFrontCache;
+        const cached = this.backFrontCache;
+        if (cached &&
+            cached.row === hu.row &&
+            isBattleHittableAnyActionTile(world, cached.row, cached.col) &&
+            this.canWalkDirectlyOnRow(world, hu.row, hu.col, cached.col)) {
+          return cached;
         }
         return null;
       }
@@ -363,6 +377,9 @@
         if (!isBattleHittableAnyActionTile(world, row, frontCol)) {
           continue;
         }
+        if (!this.canWalkDirectlyOnRow(world, row, hu.col, frontCol)) {
+          continue;
+        }
         const dist = this.getDist(hu.col, frontCol);
         if (dist < bestDist || (dist === bestDist && best && frontCol < best.col)) {
           bestDist = dist;
@@ -374,34 +391,28 @@
       return best;
     }
 
-    // 同じ段で最も近い破壊可能オブジェ（同段で直接歩ける物を優先、同距離は左優先）
-    findNearestRowDestroyTarget(world, row, fromCol) {
+    // 同じ段で穴やドラム缶に遮られず直接歩いて行ける最も近い破壊可能オブジェ（同距離は左優先）
+    findNearestDirectRowDestroyTarget(world, row, fromCol) {
       let bestDirect = null;
       let bestDirectDist = 999;
-      let bestAny = null;
-      let bestAnyDist = 999;
 
       for (let c = 0; c < world.cols; c++) {
         if (!isBattleHittableDestroyTile(world, row, c)) continue;
+        if (!this.canWalkDirectlyOnRow(world, row, fromCol, c)) continue;
         const dist = this.getDist(fromCol, c);
-        if (this.canWalkDirectlyOnRow(world, row, fromCol, c)) {
-          if (dist < bestDirectDist || (dist === bestDirectDist && bestDirect && c < bestDirect.col)) {
-            bestDirectDist = dist;
-            bestDirect = { row, col: c };
-          }
-        }
-        if (dist < bestAnyDist || (dist === bestAnyDist && bestAny && c < bestAny.col)) {
-          bestAnyDist = dist;
-          bestAny = { row, col: c };
+        if (dist < bestDirectDist || (dist === bestDirectDist && bestDirect && c < bestDirect.col)) {
+          bestDirectDist = dist;
+          bestDirect = { row, col: c };
         }
       }
-      return bestDirect || bestAny;
+      return bestDirect;
     }
 
     // 最も近い高さの段を列挙（同距離時はドア以外の破壊可能オブジェクトが多い段を優先、同数なら上優先）
-    getClosestHeightRows(world, fromRow) {
+    getClosestHeightRows(world, fromRow, excludeFromRow = true) {
       const list = [];
       for (let r = 0; r < world.rows; r++) {
+        if (excludeFromRow && r === fromRow) continue;
         if (this.hasAnyDestroyTargetOnRow(world, r)) {
           list.push({
             row: r,
@@ -657,9 +668,9 @@
                 exitBits = res.firstBits;
               }
             }
-          } else if (!checkGoal && this.hasAnyDestroyTargetOnRow(world, floorRow)) {
-            const target = this.findNearestRowDestroyTarget(world, floorRow, hu.col);
-            if (target && this.canWalkDirectlyOnRow(world, floorRow, hu.col, target.col)) {
+          } else if (!checkGoal && this.hasAnyDirectDestroyTargetOnRow(world, floorRow, hu.col)) {
+            const target = this.findNearestDirectRowDestroyTarget(world, floorRow, hu.col);
+            if (target) {
               if (target.col < hu.col) exitBits = LEFT;
               else if (target.col > hu.col) exitBits = RIGHT;
             }
@@ -793,86 +804,75 @@
         this.routeTarget = null;
       }
 
-      // === 水平（同じ段）にドアを除く破壊可能オブジェがない時 ===
-      if (!this.hasAnyDestroyTargetOnRow(world, hu.row)) {
-        const heightRows = this.getClosestHeightRows(world, hu.row);
-        if (heightRows.length > 0) {
-          // 最も近い高さ（同距離時は破壊対象が多い段優先）へ素直に進めるか確認
-          const primaryRow = heightRows[0];
-          const clean = this.canMoveCleanlyToHeightRow(world, hu, primaryRow);
-          if (clean) {
-            this.routeTarget = { row: clean.row, col: clean.col };
-            this.stepToBits(hu, clean.firstBits);
+      // === 水平（同じ段）に歩いて行ける破壊可能オブジェがある場合 ===
+      if (this.hasAnyDirectDestroyTargetOnRow(world, hu.row, hu.col)) {
+        // 優先1: 左右どちらかに破壊可能オブジェがある爆弾
+        const bombTarget = this.findBestBombTarget(world, hu);
+        if (bombTarget) {
+          if (hu.row === bombTarget.row && hu.col === bombTarget.col) {
+            this.wantHammerCell = { row: bombTarget.row, col: bombTarget.col, isLock: true };
+          } else {
+            hu.bits = bombTarget.col < hu.col ? LEFT : RIGHT;
+          }
+          return;
+        }
+
+        // 優先2: 同じ段の裏敵の進行方向1マス先に破壊可能オブジェがある時だけトリガー
+        const backBreakTarget = this.findBestBackEnemyBreakableFront(world, hu);
+        if (backBreakTarget) {
+          if (hu.row === backBreakTarget.row && hu.col === backBreakTarget.col) {
+            this.wantHammerCell = {
+              row: backBreakTarget.row,
+              col: backBreakTarget.col,
+              isLock: isBattleDestroyTargetTile(backBreakTarget.tile)
+            };
+          } else {
+            hu.bits = backBreakTarget.col < hu.col ? LEFT : RIGHT;
+          }
+          return;
+        }
+
+        // 優先3: 自身のマス（ドア除く破壊可能オブジェ）
+        if (isBattleHittableDestroyTile(world, hu.row, hu.col)) {
+          this.wantHammerCell = { row: hu.row, col: hu.col, isLock: true };
+          return;
+        }
+
+        // 優先4 & 5: 同じ段で直接行ける最も近い左側のオブジェ > 右（同距離なら左優先）
+        const horizTarget = this.findNearestDirectRowDestroyTarget(world, hu.row, hu.col);
+        if (horizTarget) {
+          hu.bits = horizTarget.col < hu.col ? LEFT : RIGHT;
+          return;
+        }
+      }
+
+      // === 水平に破壊可能オブジェがない、または穴・ドラム缶で行けない時 ===
+      // まず上下の「近い高さ＆破壊対象が多い段」を優先して検索する
+      const heightRows = this.getClosestHeightRows(world, hu.row, true);
+      if (heightRows.length > 0) {
+        const primaryRow = heightRows[0];
+        const clean = this.canMoveCleanlyToHeightRow(world, hu, primaryRow);
+        if (clean) {
+          this.routeTarget = { row: clean.row, col: clean.col };
+          this.stepToBits(hu, clean.firstBits);
+          return;
+        }
+        if (heightRows.length > 1 && Math.abs(heightRows[1] - hu.row) === Math.abs(primaryRow - hu.row)) {
+          const altClean = this.canMoveCleanlyToHeightRow(world, hu, heightRows[1]);
+          if (altClean) {
+            this.routeTarget = { row: altClean.row, col: altClean.col };
+            this.stepToBits(hu, altClean.firstBits);
             return;
           }
-          // 同距離のもう一方の段があればそちらも確認
-          if (heightRows.length > 1 && Math.abs(heightRows[1] - hu.row) === Math.abs(primaryRow - hu.row)) {
-            const altClean = this.canMoveCleanlyToHeightRow(world, hu, heightRows[1]);
-            if (altClean) {
-              this.routeTarget = { row: altClean.row, col: altClean.col };
-              this.stepToBits(hu, altClean.firstBits);
-              return;
-            }
-          }
         }
-
-        // 進みたい高さに進めない時は最低優先でA*発動（ドア以外を自力で殴るまで継続）
-        if (!this.acquireAndFollowAStarTarget(world, hu)) {
-          if ((world.f & 1) === 1) {
-            world.hunterAI.update(world);
-          }
-        }
-        return;
       }
 
-      // === 水平（同じ段）に破壊可能オブジェがある時 ===
-
-      // 優先1: 左右どちらかに破壊可能オブジェがある爆弾
-      const bombTarget = this.findBestBombTarget(world, hu);
-      if (bombTarget) {
-        if (hu.row === bombTarget.row && hu.col === bombTarget.col) {
-          this.wantHammerCell = { row: bombTarget.row, col: bombTarget.col, isLock: true };
-        } else if (!this.moveTowardGoalCached(world, hu, bombTarget.row, bombTarget.col, false)) {
-          this.acquireAndFollowAStarTarget(world, hu);
+      // 進みたい高さ（上下の段）にも進めない時は最低優先でA*発動（ドア以外を自力で殴るまで継続）
+      if (!this.acquireAndFollowAStarTarget(world, hu)) {
+        if ((world.f & 1) === 1) {
+          world.hunterAI.update(world);
         }
-        return;
       }
-
-      // 優先2: 同じ段の裏敵の進行方向1マス先に破壊可能オブジェがある時だけトリガー
-      const backBreakTarget = this.findBestBackEnemyBreakableFront(world, hu);
-      if (backBreakTarget) {
-        if (hu.row === backBreakTarget.row && hu.col === backBreakTarget.col) {
-          this.wantHammerCell = {
-            row: backBreakTarget.row,
-            col: backBreakTarget.col,
-            isLock: isBattleDestroyTargetTile(backBreakTarget.tile)
-          };
-        } else if (!this.moveTowardGoalCached(world, hu, backBreakTarget.row, backBreakTarget.col, false)) {
-          this.acquireAndFollowAStarTarget(world, hu);
-        }
-        return;
-      }
-
-      // 優先3: 自身のマス（ドア除く破壊可能オブジェ）
-      if (isBattleHittableDestroyTile(world, hu.row, hu.col)) {
-        this.wantHammerCell = { row: hu.row, col: hu.col, isLock: true };
-        return;
-      }
-
-      // 優先4 & 5: 最も近い左側のオブジェ > 右（同距離なら左優先）
-      const horizTarget = this.findNearestRowDestroyTarget(world, hu.row, hu.col);
-      if (horizTarget) {
-        if (this.canWalkDirectlyOnRow(world, hu.row, hu.col, horizTarget.col)) {
-          hu.bits = horizTarget.col < hu.col ? LEFT : RIGHT;
-        } else if (this.moveTowardGoalCached(world, hu, horizTarget.row, horizTarget.col, false)) {
-          this.routeTarget = { row: horizTarget.row, col: horizTarget.col };
-        } else {
-          this.acquireAndFollowAStarTarget(world, hu);
-        }
-        return;
-      }
-
-      this.acquireAndFollowAStarTarget(world, hu);
     }
 
     updateHammer(world) {
