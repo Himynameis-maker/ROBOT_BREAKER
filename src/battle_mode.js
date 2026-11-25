@@ -46,14 +46,20 @@
       this.lockedTarget = null;
       this.wantHammerCell = null;
       this.useNormalChase = false;
-      this.climbGoalRow = null;
+      this.moveGoal = null;
+      this.ladderDir = 0;
+      this.ladderStartRow = null;
+      this.pendingClimbBits = 0;
     }
 
     reset() {
       this.lockedTarget = null;
       this.wantHammerCell = null;
       this.useNormalChase = false;
-      this.climbGoalRow = null;
+      this.moveGoal = null;
+      this.ladderDir = 0;
+      this.ladderStartRow = null;
+      this.pendingClimbBits = 0;
     }
 
     getDist(world, colA, colB) {
@@ -91,7 +97,6 @@
         const r = cur.r;
         const c = cur.c;
 
-        // 1. 左右の横移動（原則中央エリア優先、端を使う必要がある場合も安全判定）
         const dirs = [
           { dc: -1, bit: LEFT },
           { dc: 1, bit: RIGHT }
@@ -108,7 +113,6 @@
           queue.push({ r, c: nc, firstBits });
         }
 
-        // 2. 上へハシゴ移動
         if (r > 0 && isLadderTile(world.getTile(r, c))) {
           const upTile = world.getTile(r - 1, c);
           if (!isSolidDrum(upTile) && !isFallHoleTile(upTile)) {
@@ -122,7 +126,6 @@
           }
         }
 
-        // 3. 下へハシゴ移動
         if (r < rows - 1 && isLadderTile(world.getTile(r + 1, c))) {
           const downTile = world.getTile(r, c);
           if (!isSolidDrum(downTile) && !isFallHoleTile(downTile)) {
@@ -137,7 +140,6 @@
         }
       }
 
-      // もし穴やドラム缶が特殊な位置にあってBFSで見つからない場合は単純左右/既存AIにフォールバック
       if (startRow === goalRow) {
         return goalCol < startCol ? LEFT : RIGHT;
       }
@@ -181,10 +183,10 @@
       return best;
     }
 
-    // 同じ段で、裏にいる敵の進行方向1マス先を捉える（穴/ドラム缶なら対象外、近い順、同距離は左優先）
-    findBestBackEnemyFrontTarget(world, hu) {
+    // 同じ段で、裏にいる敵の進行方向1マス先に破壊可能オブジェがあるマスをすべて検索し、最も近いマスを返す（同距離は左優先）
+    findBestBackEnemyFrontTarget(world, hu, rowOverride) {
       if (!world.enemies || world.enemies.length === 0) return null;
-      const row = hu.row;
+      const row = rowOverride != null ? rowOverride : hu.row;
       let best = null;
       let bestDist = 999;
 
@@ -198,8 +200,8 @@
         const step = (e.facing & RIGHT) ? 1 : -1;
         const frontCol = world.wrapCol(e.col + step);
         const frontTile = world.getTile(row, frontCol);
-        // 穴かドラム缶になったらこの優先をやめる
-        if (isFallHoleTile(frontTile) || isSolidDrum(frontTile)) {
+        // 敵の進行方向1マス先に破壊可能オブジェがあるときだけトリガー（穴・ドラム缶・空マスは無視）
+        if (!isBattleDestroyTargetTile(frontTile)) {
           continue;
         }
         const dist = this.getDist(world, hu.col, frontCol);
@@ -209,6 +211,23 @@
         }
       }
       return best;
+    }
+
+    isCellTriggeredByBackEnemy(world, row, col) {
+      if (!world.enemies || world.enemies.length === 0) return false;
+      for (let i = 0; i < world.enemies.length; i++) {
+        const e = world.enemies[i];
+        if (!e.isBack || e.row !== row) continue;
+        if (e.state === 3 || e.state === 4 || e.state === 10 || e.state === 15 || e.state === 16) {
+          continue;
+        }
+        const step = (e.facing & RIGHT) ? 1 : -1;
+        const frontCol = world.wrapCol(e.col + step);
+        if (frontCol === col && isBattleDestroyTargetTile(world.getTile(row, frontCol))) {
+          return true;
+        }
+      }
+      return false;
     }
 
     // 同じ段で最も近いオブジェ（ドアを除く、同距離は左優先）
@@ -242,41 +261,84 @@
       return this.findNearestRowDestroyTarget(world, bestRow, hu.col);
     }
 
-    moveTowardCell(world, hu, targetRow, targetCol) {
-      // ハシゴ昇降中(State 2)やハシゴ遷移中(State 3/6)の連続制御
-      if (hu.state === 2 || hu.state === 3 || hu.state === 6) {
-        if (hu.row === targetRow && (hu.state === 6 || (hu.state === 2 && hu.prom < 10))) {
-          if (targetCol !== hu.col) {
-            hu.bits = targetCol < hu.col ? LEFT : RIGHT;
-            return;
+    // ハシゴ昇降・遷移中の安全維持（毎フレーム呼ばれても安全）
+    maintainLadderState(world, hu) {
+      if (hu.state === 8 || hu.state === 9) {
+        hu.bits = hu.dir & (LEFT | RIGHT);
+        return true;
+      }
+
+      if (hu.state === 3) {
+        if (hu.kind === "enter") {
+          hu.bits = UP;
+        } else if (hu.kind === "enter_top") {
+          hu.bits = DOWN;
+        } else {
+          hu.bits = 0;
+        }
+        return true;
+      }
+
+      if (hu.state === 6) {
+        if (hu.kind === "cont" && this.moveGoal && hu.row === this.moveGoal.row) {
+          if (this.moveGoal.col !== hu.col) {
+            hu.bits = this.moveGoal.col < hu.col ? LEFT : RIGHT;
+            return true;
           }
         }
-        const curDir = hu.dir & (UP | DOWN);
-        if (curDir !== 0) {
-          hu.bits = curDir;
-          return;
+        const dirV = this.ladderDir || (hu.dir & (UP | DOWN));
+        hu.bits = dirV || UP;
+        return true;
+      }
+
+      if (hu.state === 2) {
+        // 下り連続ハシゴの境目 (prom===31 でちょうど上の段の床高さにいる1フレーム) なら横へ降りられる
+        if (hu.prom === 31 &&
+            hu.y === (hu.row + 1) * 32 &&
+            this.moveGoal &&
+            hu.row === this.moveGoal.row &&
+            this.ladderStartRow !== hu.row &&
+            this.moveGoal.col !== hu.col) {
+          hu.bits = this.moveGoal.col < hu.col ? LEFT : RIGHT;
+          return true;
         }
+        const dirV = this.ladderDir || (hu.dir & (UP | DOWN));
+        hu.bits = dirV || UP;
+        return true;
+      }
+
+      this.ladderDir = 0;
+      this.ladderStartRow = null;
+      return false;
+    }
+
+    moveTowardCell(world, hu, targetRow, targetCol) {
+      this.moveGoal = { row: targetRow, col: targetCol };
+      this.pendingClimbBits = 0;
+
+      if (this.maintainLadderState(world, hu)) {
+        return;
       }
 
       const bits = this.findNextMoveBits(world, hu.row, hu.col, targetRow, targetCol);
       if (bits !== 0) {
-        // 上下ハシゴに入る直前はX位置をマスの中心(xMod===0)に合わせる
         if ((bits & (UP | DOWN)) !== 0) {
+          this.pendingClimbBits = bits;
+          this.ladderDir = bits;
+          this.ladderStartRow = hu.row;
           const xMod = hu.x & 0x0f;
-          if (xMod >= 8) {
-            hu.bits = RIGHT | bits;
+          // ハシゴ進入前にまず純粋な横移動だけでマス中央付近へ寄せる（競合・震え防止）
+          if (xMod > 2 && xMod < 14) {
+            hu.bits = xMod >= 8 ? RIGHT : LEFT;
             return;
           }
-          if (xMod >= 1 && xMod <= 7) {
-            hu.bits = LEFT | bits;
-            return;
-          }
+          hu.bits = bits;
+          return;
         }
         hu.bits = bits;
         return;
       }
 
-      // 万一BFSで見つからない場合の安全フォールバック
       const prevRow = hu.row;
       world.hunterAI.update(world);
       if (hu.row !== prevRow) hu.bits = 0;
@@ -293,6 +355,16 @@
       if (hu.state === 10 || hu.state === 11 || hu.state === 15 || hu.state === 16) {
         hu.bits = 0;
         this.lockedTarget = null;
+        this.moveGoal = null;
+        this.ladderDir = 0;
+        this.ladderStartRow = null;
+        this.pendingClimbBits = 0;
+        return;
+      }
+
+      // ハシゴ昇降・遷移中は途中で目標を切り替えて震えないよう完遂する
+      if (hu.state === 2 || hu.state === 3 || hu.state === 6 || hu.state === 8 || hu.state === 9) {
+        this.maintainLadderState(world, hu);
         return;
       }
 
@@ -334,26 +406,23 @@
       if (bombTarget) {
         if (hu.row === bombTarget.row && hu.col === bombTarget.col) {
           this.wantHammerCell = { row: bombTarget.row, col: bombTarget.col, isLock: true };
+          hu.bits = 0;
         } else {
           this.moveTowardCell(world, hu, bombTarget.row, bombTarget.col);
         }
         return;
       }
 
-      // 優先2: 裏にいる敵がいる時、その敵の進行方向1マス先を捉え続け、そのマスに入った時破壊可能オブジェマスなら壊す
-      const backFront = this.findBestBackEnemyFrontTarget(world, hu);
+      // 優先2: 同じ段に裏にいる敵がいて、その進行方向1マス先に破壊可能オブジェがある時だけトリガー
+      const backFront = this.findBestBackEnemyFrontTarget(world, hu, hu.row);
       if (backFront) {
         if (hu.row === backFront.row && hu.col === backFront.col) {
-          if (isBattleAnyActionTargetTile(backFront.tile)) {
-            this.wantHammerCell = {
-              row: backFront.row,
-              col: backFront.col,
-              isLock: isBattleDestroyTargetTile(backFront.tile)
-            };
-          } else {
-            // 空きマス上なので中心付近で待機しつつ進行先を捉え続ける
-            hu.bits = 0;
-          }
+          this.wantHammerCell = {
+            row: backFront.row,
+            col: backFront.col,
+            isLock: true
+          };
+          hu.bits = 0;
         } else {
           this.moveTowardCell(world, hu, backFront.row, backFront.col);
         }
@@ -363,6 +432,8 @@
       // 優先3: プレイヤーが水平2マス以内に入った時、通常の判断に変える
       if (pl && pl.row === hu.row && Math.abs(pl.col - hu.col) <= 2) {
         this.useNormalChase = true;
+        this.moveGoal = null;
+        this.pendingClimbBits = 0;
         world.hunterAI.update(world);
         return;
       }
@@ -370,6 +441,7 @@
       // 優先4: 自身のマス（ドア除く破壊可能オブジェ）
       if (isBattleDestroyTargetTile(world.getTile(hu.row, hu.col))) {
         this.wantHammerCell = { row: hu.row, col: hu.col, isLock: true };
+        hu.bits = 0;
         return;
       }
 
@@ -384,6 +456,7 @@
       world.hunterAI.update(world);
     }
 
+    // 毎フレーム呼ばれる（高頻度検索・ハシゴ同期・ドア/ターゲット叩き）
     updateHammer(world) {
       const hu = world.hunter;
       if (!hu) return;
@@ -394,44 +467,68 @@
         return;
       }
 
+      // 毎フレームハシゴ状態を安全維持（1Fの取りこぼしによる離脱ミスを防止）
+      if (hu.state === 2 || hu.state === 3 || hu.state === 6 || hu.state === 8 || hu.state === 9) {
+        this.maintainLadderState(world, hu);
+        return;
+      }
+
+      // ハシゴ進入直前の中央寄せが完了した瞬間に、1Fも遅れず上下入力へ切り替え
+      if (this.pendingClimbBits !== 0) {
+        const xModC = hu.x & 0x0f;
+        if (xModC <= 2 || xModC >= 14) {
+          hu.bits = this.pendingClimbBits;
+          this.pendingClimbBits = 0;
+        }
+      }
+
       const curTile = world.getTile(hu.row, hu.col);
       const xMod = hu.x & 0x0f;
       const nearCenter = xMod <= 2 || xMod >= 14;
 
-      // 1. 破壊目標セルに到達していれば中心寄り（または待機状態）で叩く
-      if (this.wantHammerCell &&
-          hu.row === this.wantHammerCell.row &&
-          hu.col === this.wantHammerCell.col) {
-        if (isBattleAnyActionTargetTile(curTile)) {
-          if (nearCenter || hu.state === 0) {
-            hu.bits |= HAMMER;
-            if (this.wantHammerCell.isLock && isBattleDestroyTargetTile(curTile)) {
-              this.lockedTarget = { row: hu.row, col: hu.col };
-            }
-            return;
-          }
-          // まだ中心へ歩いている最中は中心方向へ微調整
-          hu.bits = (hu.bits & ~(LEFT | RIGHT)) | (xMod >= 8 ? RIGHT : LEFT);
-          return;
-        }
-      }
-
-      // 2. ロック中のセルに留まっている間は即叩く
+      // 1. ロック中のセルに留まっている間は即叩き切る
       if (this.lockedTarget &&
           hu.row === this.lockedTarget.row &&
           hu.col === this.lockedTarget.col &&
           isBattleDestroyTargetTile(curTile)) {
+        hu.bits = HAMMER;
+        return;
+      }
+
+      // 2. 高頻度検索：裏の敵の進行方向1マス先トリガーと今いるマスが一致していれば殴る
+      if (this.isCellTriggeredByBackEnemy(world, hu.row, hu.col)) {
+        if (nearCenter || hu.state === 0) {
+          hu.bits = HAMMER;
+          this.lockedTarget = { row: hu.row, col: hu.col };
+          return;
+        }
+        hu.bits = xMod >= 8 ? RIGHT : LEFT;
+        return;
+      }
+
+      // 3. 通る場所に閉じたドアがあるなら（別フロアへの移動中でも）殴って開ける（200点）
+      if (curTile === TILE.DOOR) {
         hu.bits |= HAMMER;
         return;
       }
 
-      // 3. 移動中に閉じたドアを通った時、中心付近なら叩いて開ける（200点）
-      if (curTile === TILE.DOOR && (nearCenter || hu.state === 0)) {
-        hu.bits |= HAMMER;
+      // 4. 破壊目標セル（爆弾・自身のマス・左右オブジェ）に到達していれば中心寄りで叩く
+      if (this.wantHammerCell &&
+          hu.row === this.wantHammerCell.row &&
+          hu.col === this.wantHammerCell.col &&
+          isBattleDestroyTargetTile(curTile)) {
+        if (nearCenter || hu.state === 0) {
+          hu.bits = HAMMER;
+          if (this.wantHammerCell.isLock) {
+            this.lockedTarget = { row: hu.row, col: hu.col };
+          }
+          return;
+        }
+        hu.bits = xMod >= 8 ? RIGHT : LEFT;
         return;
       }
 
-      // 4. 通常追尾判断（プレイヤー水平2マス以内）中なら、同じマスの破壊対象（爆弾含む）も叩く
+      // 5. 通常追尾判断（プレイヤー水平2マス以内）中なら、同じマスの破壊対象も叩く
       if (this.useNormalChase && pl && hu.row === pl.row && hu.col === pl.col) {
         if (isBattleAnyActionTargetTile(curTile)) {
           hu.bits |= HAMMER;
