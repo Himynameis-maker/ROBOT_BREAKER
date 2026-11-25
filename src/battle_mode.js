@@ -931,8 +931,8 @@
       this.durationFrames = options.durationFrames || BATTLE_DURATION_FRAMES;
       this.remainFrames = this.durationFrames;
       this.scores = {
-        player: { total: 0, c200: 0, c400: 0, c600: 0, c800: 0 },
-        hunter: { total: 0, c200: 0, c400: 0, c600: 0, c800: 0 }
+        player: { total: 0, c200: 0, c400: 0, c600: 0, cAction: 0 },
+        hunter: { total: 0, c200: 0, c400: 0, c600: 0, cAction: 0 }
       };
       this.popups = [];
       this.ended = false;
@@ -943,20 +943,26 @@
       this.hunterAI = new BattleHunterAI();
     }
 
-    addScore(byPlayer, points, row, col) {
+    addScore(byPlayer, points, row, col, isAction = false) {
       if (this.ended || !points) return;
       const bag = byPlayer ? this.scores.player : this.scores.hunter;
       bag.total += points;
-      if (points === 200) bag.c200 += 1;
-      else if (points === 400) bag.c400 += 1;
-      else if (points === 600) bag.c600 += 1;
-      else if (points === 800) bag.c800 += 1;
+      if (isAction) {
+        bag.cAction += 1;
+      } else if (points === 200) {
+        bag.c200 += 1;
+      } else if (points === 400) {
+        bag.c400 += 1;
+      } else if (points === 600) {
+        bag.c600 += 1;
+      }
 
       this.popups.push({
         x: col * 16 + 8,
         y: Math.max(20, row * 32 + 4),
         points,
         byPlayer: !!byPlayer,
+        isAction: !!isAction,
         timer: 44,
         maxTimer: 44
       });
@@ -966,17 +972,16 @@
       if (!evt || this.ended) return;
       if (evt.type === "wallDestroyed") {
         const pts = getWallDestroyPoints(evt.tile);
-        if (pts > 0) this.addScore(evt.byPlayer, pts, evt.row, evt.col);
+        if (pts > 0) this.addScore(evt.byPlayer, pts, evt.row, evt.col, false);
       } else if (evt.type === "bombExploded" ||
                  evt.type === "doorOpened" ||
                  evt.type === "ladderDestroyed" ||
                  evt.type === "pillarDestroyed") {
-        this.addScore(evt.byPlayer, 200, evt.row, evt.col);
-      } else if (evt.type === "opponentKnockedDown") {
-        this.addScore(evt.byPlayer, 400, evt.row, evt.col);
-      } else if (evt.type === "enemyBackEntered" ||
+        this.addScore(evt.byPlayer, 200, evt.row, evt.col, false);
+      } else if (evt.type === "opponentKnockedDown" ||
+                 evt.type === "enemyBackEntered" ||
                  evt.type === "enemyKnockedDown") {
-        this.addScore(evt.byPlayer, 800, evt.row, evt.col);
+        this.addScore(evt.byPlayer, 400, evt.row, evt.col, true);
       }
     }
 
