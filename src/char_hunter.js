@@ -2,6 +2,7 @@
   "use strict";
 
   const G = root.BreakerGame || {};
+  const RIGHT = G.RIGHT || 1;
   const LEFT = G.LEFT || 2;
   const DOWN = G.DOWN || 4;
   const UP = G.UP || 8;
@@ -723,8 +724,94 @@
       }
     },
 
+    getHunterWalkVisual(slot, world) {
+      const curF = world ? (world.f || 0) : 0;
+      const introActive = !!(world && world.introActive);
+      let vis = this._hunterWalkVis;
+
+      if (!vis || vis.world !== world || curF < vis.lastWorldF || introActive) {
+        vis = {
+          world,
+          lastWorldF: curF - 1,
+          lastState: -1,
+          lastX: slot.x,
+          lastVisWalkFrames: 0,
+          carryOffset: 0,
+          inHorizChain: false,
+          poseKey: "idle",
+          stepOffsetY: 0,
+          useWalk: false
+        };
+        this._hunterWalkVis = vis;
+      }
+
+      if (world && curF === vis.lastWorldF) {
+        return vis;
+      }
+
+      const s = slot.state;
+      const bits = slot.bits || 0;
+      const wf = slot.walkFrames || 0;
+      let poseKey = "idle";
+      let stepOffsetY = 0;
+      let useWalk = false;
+
+      if (s === 1) {
+        if (vis.lastState !== 1) {
+          vis.carryOffset = vis.inHorizChain ? ((vis.lastVisWalkFrames + 1) - wf) : 0;
+        }
+        const visWf = Math.max(0, wf + vis.carryOffset);
+        const step = Math.floor(visWf / WALK_STEP_FRAMES) & 3;
+        poseKey = "walk" + step;
+        if (step === 0 || step === 2) {
+          stepOffsetY = 1;
+        }
+        vis.lastVisWalkFrames = visWf;
+        vis.inHorizChain = true;
+        useWalk = true;
+      } else if (s === 8 || s === 9) {
+        let visWf = 0;
+        if (vis.inHorizChain) {
+          const movedOrEntered = (slot.x !== vis.lastX) || (vis.lastState !== s);
+          visWf = vis.lastVisWalkFrames + (movedOrEntered ? 1 : 0);
+        }
+        const step = Math.floor(visWf / WALK_STEP_FRAMES) & 3;
+        poseKey = "walk" + step;
+        if (step === 0 || step === 2) {
+          stepOffsetY = 1;
+        }
+        vis.lastVisWalkFrames = visWf;
+        vis.inHorizChain = true;
+        useWalk = true;
+      } else if (s === 0 && vis.lastState === 9 && (bits & (LEFT | RIGHT)) !== 0) {
+        const visWf = vis.lastVisWalkFrames + 1;
+        const step = Math.floor(visWf / WALK_STEP_FRAMES) & 3;
+        poseKey = "walk" + step;
+        if (step === 0 || step === 2) {
+          stepOffsetY = 1;
+        }
+        vis.lastVisWalkFrames = visWf;
+        vis.inHorizChain = true;
+        useWalk = true;
+      } else {
+        vis.lastVisWalkFrames = 0;
+        vis.carryOffset = 0;
+        vis.inHorizChain = false;
+        useWalk = false;
+      }
+
+      vis.lastState = s;
+      vis.lastX = slot.x;
+      vis.lastWorldF = curF;
+      vis.poseKey = poseKey;
+      vis.stepOffsetY = stepOffsetY;
+      vis.useWalk = useWalk;
+      return vis;
+    },
+
     drawHunterAt(slot, baseX, baseDrawY, world) {
       if (!this.hunterSprites) return;
+      const walkVis = this.getHunterWalkVisual(slot, world);
       const sprites = this.hunterSprites;
       const ctx = this.ctx;
       const faceVal = slot.facing || slot.dir;
@@ -815,7 +902,7 @@
         return;
       }
 
-      if (slot.state === 0 && world && slot.row < world.rows - 1) {
+      if (slot.state === 0 && !walkVis.useWalk && world && slot.row < world.rows - 1) {
         const curT = world.getTile(slot.row, slot.col);
         if (isSameLadderType(curT, world.getTile(slot.row + 1, slot.col))) {
           const img = sprites.climbHold_R;
@@ -830,16 +917,9 @@
       let stepOffsetY = 0;
       if (slot.state === 5) {
         poseKey = "fall";
-      } else if (slot.state === 8 || slot.state === 9) {
-        poseKey = "walk2";
-        stepOffsetY = 1;
-      } else if (slot.state === 1) {
-        const wf = slot.walkFrames || 0;
-        const step = Math.floor(wf / WALK_STEP_FRAMES) & 3;
-        poseKey = "walk" + step;
-        if (step === 0 || step === 2) {
-          stepOffsetY = 1;
-        }
+      } else if (walkVis.useWalk) {
+        poseKey = walkVis.poseKey;
+        stepOffsetY = walkVis.stepOffsetY;
       }
 
       const img = sprites[poseKey + "_" + facing] || sprites["idle_" + facing];
