@@ -754,8 +754,14 @@
       if (tile === TILE.BOMB) {
         this.triggerBomb(row, c, byPlayer);
         if (this.battleManager) {
-          if (!byPlayer && this.battleManager.hunterAI && typeof this.battleManager.hunterAI.notifyBombHit === "function") {
-            this.battleManager.hunterAI.notifyBombHit(row, c);
+          if (!byPlayer) {
+            // バトルモードでハンターが爆弾を叩いた時は、無差別爆風の前に避けられるよう振り終わり硬直を短縮
+            if (this.hunter && this.hunter.state === 4 && this.hunter.hammerTimer < 22) {
+              this.hunter.hammerTimer = 22;
+            }
+            if (this.battleManager.hunterAI && typeof this.battleManager.hunterAI.notifyBombHit === "function") {
+              this.battleManager.hunterAI.notifyBombHit(row, c);
+            }
           }
           this.battleManager.onEvent({
             type: "bombExploded",
@@ -974,78 +980,92 @@
       this.waves = nextWaves.concat(this.waves);
     }
 
-    resolveEnemyKnockdownAttacker(e, prev) {
-      let checkRow = e.row;
+    resolveKnockdownAttacker(slot, prev) {
+      let checkRow = slot.row;
       if (prev.state === 2) {
-        const curT = this.getTile(e.row, e.col);
-        if (curT === TILE.HOLE_PILLAR_LAD || ((e.y & 0x0f) !== 0 && (e.y & 0x10) !== 0)) {
-          checkRow = Math.min(this.rows - 1, e.row + 1);
+        const curT = this.getTile(slot.row, slot.col);
+        if (curT === TILE.HOLE_PILLAR_LAD || ((slot.y & 0x0f) !== 0 && (slot.y & 0x10) !== 0)) {
+          checkRow = Math.min(this.rows - 1, slot.row + 1);
         }
+      } else if (prev.state === 5) {
+        checkRow = Math.max(0, Math.min(this.rows - 1, Math.floor((slot.y - 16) / 32)));
       }
-      const enemySide = e.isBack ? 1 : 0;
+
+      const targetSide = slot.isPlayer ? 0 : (!slot.isEnemy ? 1 : (slot.isBack ? 1 : 0));
 
       if (this.explosions && this.explosions.length > 0) {
         for (let i = 0; i < this.explosions.length; i++) {
           const ex = this.explosions[i];
-          if (ex.col !== e.col || ex.row !== checkRow) continue;
+          if (ex.col !== slot.col || ex.row !== checkRow) continue;
           if (ex.kind === "bomb") {
             const attackerSide = ex.byPlayer ? 0 : 1;
-            if (ex.indiscriminate || ex.age >= 21 || enemySide !== attackerSide) {
+            if (ex.indiscriminate || ex.age >= 21 || targetSide !== attackerSide) {
               return !!ex.byPlayer;
             }
           } else if (ex.kind === "wall") {
             const attackerSide = ex.byPlayer ? 0 : 1;
-            if (ex.age < COLLAPSE_HIT_FRAMES && enemySide !== attackerSide) {
+            if (ex.age < COLLAPSE_HIT_FRAMES && targetSide !== attackerSide) {
               return !!ex.byPlayer;
             }
           }
         }
       }
 
-      const tile = this.getTile(checkRow, e.col);
-      const isDangerLadderInfo = (r, c) => {
-        const lt = this.getTile(r, c);
-        if (!isCrumblingLadderTile(lt)) return null;
-        const info = this.getCrumblingInfo(r, c);
-        const stage = info ? info.stage : (lt & 0x07);
-        return stage <= 2 ? info : null;
-      };
+      const tile = this.getTile(checkRow, slot.col);
 
-      const curDanger = isDangerLadderInfo(checkRow, e.col);
-      if (curDanger && checkRow < this.rows - 1) {
-        const belowDanger = isDangerLadderInfo(checkRow + 1, e.col);
-        if (belowDanger) {
-          return curDanger ? !!curDanger.byPlayer : true;
-        }
-      }
-
-      if (isHoleTile(tile) && checkRow < this.rows - 1) {
-        const belowDanger = isDangerLadderInfo(checkRow + 1, e.col);
-        if (belowDanger) {
-          return !!belowDanger.byPlayer;
-        }
-      }
-
-      if (!(e.flag & 2)) {
+      if (!(slot.flag & 2)) {
         if (isDoorOpeningTile(tile)) {
-          return (tile & 0x08) === 0;
+          const attackerSide = (tile & 0x08) !== 0 ? 1 : 0;
+          if (targetSide !== attackerSide) {
+            return (tile & 0x08) === 0;
+          }
         }
         if (this.pillarBreaks && this.pillarBreaks.size > 0) {
-          const pInfo = this.getPillarBreakInfo(checkRow, e.col);
+          const pInfo = this.getPillarBreakInfo(checkRow, slot.col);
           if (pInfo && pInfo.stage >= 2) {
-            return !!pInfo.byPlayer;
-          }
-        }
-        if (isCrumblingLadderTile(tile)) {
-          const info = this.getCrumblingInfo(checkRow, e.col);
-          const stage = info ? info.stage : (tile & 0x07);
-          if (stage >= 2) {
-            return info ? !!info.byPlayer : true;
+            const attackerSide = pInfo.byPlayer ? 0 : 1;
+            if (targetSide !== attackerSide) {
+              return !!pInfo.byPlayer;
+            }
           }
         }
       }
 
-      return true;
+      if (prev.state !== 5) {
+        const isDangerLadderInfo = (r, c) => {
+          const lt = this.getTile(r, c);
+          if (!isCrumblingLadderTile(lt)) return null;
+          const info = this.getCrumblingInfo(r, c);
+          const stage = info ? info.stage : (lt & 0x07);
+          return stage <= 2 ? info : null;
+        };
+
+        const curDanger = isDangerLadderInfo(checkRow, slot.col);
+        if (curDanger && checkRow < this.rows - 1) {
+          const belowDanger = isDangerLadderInfo(checkRow + 1, slot.col);
+          if (belowDanger) {
+            return curDanger ? !!curDanger.byPlayer : true;
+          }
+        }
+
+        if (isHoleTile(tile) && checkRow < this.rows - 1) {
+          const belowDanger = isDangerLadderInfo(checkRow + 1, slot.col);
+          if (belowDanger) {
+            return !!belowDanger.byPlayer;
+          }
+        }
+
+        if (!(slot.flag & 2) && isCrumblingLadderTile(tile)) {
+          const info = this.getCrumblingInfo(checkRow, slot.col);
+          const stage = info ? info.stage : (tile & 0x07);
+          const byPl = info ? !!info.byPlayer : true;
+          if (stage >= 2 && targetSide !== (byPl ? 0 : 1)) {
+            return byPl;
+          }
+        }
+      }
+
+      return null;
     }
 
     updateHunterHammer() {
@@ -1486,7 +1506,21 @@
       if (!this.allBackStop) {
         this.updateTimedBombs();
       }
+
+      const prevPlayerState = this.player.state;
       this.stepper.step(this.player, this);
+      if (this.battleManager && prevPlayerState !== 10 && this.player.state === 10) {
+        const attackerIsPlayer = this.resolveKnockdownAttacker(this.player, { state: prevPlayerState });
+        if (attackerIsPlayer === false) {
+          this.battleManager.onEvent({
+            type: "opponentKnockedDown",
+            row: this.player.row,
+            col: this.player.col,
+            byPlayer: false
+          });
+        }
+      }
+
       if (!this.tryAgainActive && !this.isBattleMode) {
         this.updateKeyAndShoePickups();
       }
@@ -1511,7 +1545,19 @@
             }
             this.updateHunterHammer();
           }
+          const prevHunterState = this.hunter.state;
           this.stepper.step(this.hunter, this);
+          if (this.battleManager && prevHunterState !== 10 && this.hunter.state === 10) {
+            const attackerIsPlayer = this.resolveKnockdownAttacker(this.hunter, { state: prevHunterState });
+            if (attackerIsPlayer === true) {
+              this.battleManager.onEvent({
+                type: "opponentKnockedDown",
+                row: this.hunter.row,
+                col: this.hunter.col,
+                byPlayer: true
+              });
+            }
+          }
           if (this.hunter.state === 1) {
             this.hunter.walkFrames = (this.hunter.walkFrames || 0) + 1;
           } else {
@@ -1544,12 +1590,12 @@
                 });
               }
               if (prev.state !== 10 && e.state === 10) {
-                const attackerIsPlayer = this.resolveEnemyKnockdownAttacker(e, prev);
+                const attackerIsPlayer = this.resolveKnockdownAttacker(e, prev);
                 this.battleManager.onEvent({
                   type: "enemyKnockedDown",
                   row: e.row,
                   col: e.col,
-                  byPlayer: attackerIsPlayer
+                  byPlayer: attackerIsPlayer === null ? true : attackerIsPlayer
                 });
               }
             }
