@@ -243,6 +243,22 @@
       }
     }
 
+    // ハンター用の安全な空き床（オブジェクトと一切被らないマス）が1つ以上あるか確認
+    let hasHunterSpot = false;
+    for (let r = 0; r < rows && !hasHunterSpot; r++) {
+      for (let c = MIN_COL; c <= MAX_COL; c++) {
+        if (!reach.has(keyOf(r, c))) continue;
+        if (r === rows - 1 && c === playerCol) continue;
+        if (grid[r][c] !== TILE.EMPTY) continue;
+        if (r < rows - 1 && grid[r + 1][c] === TILE.PILLAR) continue;
+        hasHunterSpot = true;
+        break;
+      }
+    }
+    if (!hasHunterSpot) {
+      return false;
+    }
+
     return true;
   }
 
@@ -260,17 +276,26 @@
       }
     }
 
-    // 2. ハンター初期位置（上〜中段でプレイヤーから離れた安全な足場を優先）
+    // 2. ハンター初期位置（上〜中段でプレイヤーから離れ、他のいかなるオブジェクトとも被らない空き床を優先）
     const hunterCandidates = [];
     for (let r = 0; r < rows; r++) {
       for (let c = MIN_COL; c <= MAX_COL; c++) {
         if (!reach.has(keyOf(r, c))) continue;
         if (r === rows - 1 && c === playerCol) continue;
-        const t = grid[r][c];
-        if (t === TILE.DRUM || t === TILE.HOLE || t === TILE.BOMB || t === TILE.DOOR) continue;
-        if (r < rows - 1 && grid[r + 1][c] === TILE.LADDER && t === TILE.LADDER) continue;
+        if (grid[r][c] !== TILE.EMPTY) continue;
         if (r < rows - 1 && grid[r + 1][c] === TILE.PILLAR) continue;
         hunterCandidates.push({ r, c });
+      }
+    }
+
+    if (hunterCandidates.length === 0) {
+      for (let r = 0; r < rows; r++) {
+        for (let c = MIN_COL; c <= MAX_COL; c++) {
+          if (r === rows - 1 && c === playerCol) continue;
+          if (grid[r][c] === TILE.EMPTY) {
+            hunterCandidates.push({ r, c });
+          }
+        }
       }
     }
 
