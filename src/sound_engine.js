@@ -5,7 +5,19 @@
   const SILENT_WAV_DATA_URI =
     "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
 
-  // 1985年ファミコン（2A03 APU）準拠 Web Audio ＋ jsfxr JSON対応 サウンドエンジン
+  // FC-SFX 1985 準拠 定数
+  const FC_NOISE_PERIODS = [4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068];
+  const FC_TRI_TABLE = [
+    15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+  ];
+  const FC_DUTIES = [0.125, 0.25, 0.5];
+
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+
+  // FC-SFX 1985 準拠（60Hzステップ / 4bit量子化 / 2A03三角波＆ノイズ）＋ wallBreak(jsfxr) 残置対応エンジン
   class SoundEngine {
     constructor() {
       this.ctx = null;
@@ -14,17 +26,57 @@
       this.unlocked = false;
       this.legacySilentPlayed = false;
       this.masterVolume = 0.45;
-      this.walkStyle = "mario83"; // "mario83" | "mario83_low" | "retro_step" | "off"
-      this.walkAlt = 0;
-      this.ladderAlt = 0;
+      this.walkStyle = "on";
 
-      this.pulseWaves = {};
-      this.triWave = null;
-      this.noiseLongBuf = null;
-      this.noiseShortBuf = null;
+      this.fcSfxBuffers = Object.create(null);
+      this.fcSfxOptions = {
+        walk: { minGapMs: 65, volScale: 0.45 }
+      };
+
+      // FC-SFX 1985 で作成した JSON レシピをここに追加していく
+      this.fcSfxDefs = {
+        // 「完全ランダム #517」から低い方の音(505.5068Hz)を取り出し、ウェーブなしで短くした足音
+        // ※高い方の音にしたい場合は baseFreq と endFreq を 636.9006684770921 に変更
+        walk: {
+          id: "sfx_walk_from_517_low",
+          category: "random",
+          label: "足音（#517 低い方・短）",
+          duration: 0.05,
+          loopable: false,
+          masterGain: 1.2322258666953205,
+          pitchSemi: 0,
+          speedScale: 1,
+          toneShift: 0,
+          gainScale: 1,
+          channels: [
+            {
+              type: "triangle",
+              duty: 0.5,
+              noiseMode: "short",
+              gain: 0.9,
+              baseFreq: 505.50680899831943,
+              endFreq: 505.50680899831943,
+              slideCurve: 1,
+              smoothSlide: false,
+              vibratoDepth: 0,
+              vibratoSpeed: 0,
+              steps: null,
+              stepFrames: 1,
+              stepLoop: false,
+              stepSlidePerLoop: 1,
+              attackFrames: 0,
+              sustainFrames: 0,
+              decayFrames: 3,
+              quantize4bit: false,
+              delayFrames: 0
+            }
+          ]
+        }
+      };
+
+      // 従来の explosion.json（wallBreak のみ残置）
       this.sfxrBuffers = Object.create(null);
       this.sfxrDefs = {
-        // ご提供いただいた explosion.json の音色を維持し、リピート無しで最初の1回分(約0.19s)に調整した壁破壊音
         wallBreak: {
           oldParams: true,
           wave_type: 3,
@@ -120,7 +172,7 @@
         this.masterGain = this.ctx.createGain();
         this.masterGain.gain.value = this.muted ? 0 : this.masterVolume;
         this.masterGain.connect(this.ctx.destination);
-        this.initWaveTables();
+        this.rebuildBuffers();
 
         const handleStateChange = () => {
           if (!this.ctx) return;
@@ -164,10 +216,7 @@
       }
       this.ctx = null;
       this.masterGain = null;
-      this.pulseWaves = {};
-      this.triWave = null;
-      this.noiseLongBuf = null;
-      this.noiseShortBuf = null;
+      this.fcSfxBuffers = Object.create(null);
       this.sfxrBuffers = Object.create(null);
       this.unlocked = false;
       this.resumePromise = null;
@@ -328,8 +377,19 @@
     }
 
     setWalkStyle(style) {
-      const valid = style === "mario83" || style === "mario83_low" || style === "retro_step" || style === "off";
-      this.walkStyle = valid ? style : "mario83";
+      this.walkStyle = style === "off" ? "off" : "on";
+    }
+
+    // FC-SFX 1985 の JSON レシピを登録（任意SEの差し替え・追加用）
+    registerFcSfx(name, recipeJson, opts = null) {
+      if (!name || !recipeJson) return;
+      this.fcSfxDefs[name] = recipeJson;
+      if (opts && typeof opts === "object") {
+        this.fcSfxOptions[name] = opts;
+      }
+      if (this.ctx && this.ctx.state !== "closed") {
+        this.fcSfxBuffers[name] = this.renderFcSfxBuffer(recipeJson);
+      }
     }
 
     registerJsfxr(name, jsonParams) {
@@ -340,23 +400,222 @@
       }
     }
 
-    initWaveTables() {
+    rebuildBuffers() {
       if (!this.ctx) return;
-      this.pulseWaves[0.125] = this.createPulseWave(0.125);
-      this.pulseWaves[0.25] = this.createPulseWave(0.25);
-      this.pulseWaves[0.5] = this.createPulseWave(0.5);
-      this.triWave = this.createNesTriangleWave();
-      this.noiseLongBuf = this.createLfsrNoiseBuffer(false, 32768);
-      this.noiseShortBuf = this.createLfsrNoiseBuffer(true, 16384);
 
-      const keys = Object.keys(this.sfxrDefs);
-      for (let i = 0; i < keys.length; i++) {
-        const k = keys[i];
+      const fcKeys = Object.keys(this.fcSfxDefs);
+      for (let i = 0; i < fcKeys.length; i++) {
+        const k = fcKeys[i];
+        this.fcSfxBuffers[k] = this.renderFcSfxBuffer(this.fcSfxDefs[k]);
+      }
+
+      const sfxrKeys = Object.keys(this.sfxrDefs);
+      for (let i = 0; i < sfxrKeys.length; i++) {
+        const k = sfxrKeys[i];
         this.sfxrBuffers[k] = this.renderJsfxrBuffer(this.sfxrDefs[k]);
       }
     }
 
-    // jsfxr (sfxr.me) の JSON パラメータをそのまま AudioBuffer へ合成
+    // FC-SFX 1985 の synthesizePCM と完全同等の合成アルゴリズム
+    synthesizeFcSfxPCM(recipe, sampleRate, authenticMode = true, forceDurationSec = null) {
+      if (!recipe || !Array.isArray(recipe.channels) || recipe.channels.length === 0) {
+        return null;
+      }
+
+      const pitchMul = Math.pow(2, (recipe.pitchSemi || 0) / 12);
+      const speedMul = recipe.speedScale || 1.0;
+      const toneShift = recipe.toneShift || 0;
+      const gainMul = (recipe.gainScale || 1.0) * (recipe.masterGain || 1.0);
+
+      const dur = clamp((forceDurationSec || recipe.duration) * speedMul, 0.04, 3.2);
+      const totalSamples = Math.max(1, Math.floor(dur * sampleRate));
+      const out = new Float32Array(totalSamples);
+
+      const OS = 2;
+      const osRate = sampleRate * OS;
+      const frameSamples = authenticMode ? (osRate / 60) : (osRate / 240);
+      const frameScale = speedMul;
+
+      for (let c = 0; c < recipe.channels.length; c++) {
+        const ch = recipe.channels[c];
+        let duty = ch.duty || 0.25;
+        if (ch.type === "pulse" && toneShift !== 0) {
+          let idx = FC_DUTIES.indexOf(duty);
+          if (idx === -1) idx = 1;
+          idx = clamp(idx + Math.sign(toneShift), 0, FC_DUTIES.length - 1);
+          duty = FC_DUTIES[idx];
+        }
+        const noiseShort = ch.type === "noise" && toneShift <= -2 ? true :
+                           ch.type === "noise" && toneShift >= 2 ? false :
+                           (ch.noiseMode === "short");
+
+        const delaySamples = Math.round((ch.delayFrames || 0) * frameScale * (osRate / 60));
+        const atkF = Math.max(0, (ch.attackFrames || 0) * frameScale);
+        const susF = Math.max(0, (ch.sustainFrames || 0) * frameScale);
+        const decF = Math.max(1, (ch.decayFrames || 1) * frameScale);
+        const stepF = Math.max(1, Math.round((ch.stepFrames || 1) * frameScale));
+
+        let phase = 0;
+        let lfsr = 1;
+        let noiseAcc = 0;
+        let noiseOut = 1;
+        let prevFrameIdx = -1;
+
+        let curFreq = ch.baseFreq;
+        let curEnv = 1.0;
+
+        const chBuf = new Float32Array(totalSamples);
+
+        for (let i = 0; i < totalSamples; i++) {
+          let accSample = 0;
+
+          for (let o = 0; o < OS; o++) {
+            const osIdx = i * OS + o;
+            if (osIdx < delaySamples) continue;
+
+            const activeOsIdx = osIdx - delaySamples;
+            const activeSec = activeOsIdx / osRate;
+            const exactFrame = activeOsIdx / (osRate / 60);
+            const frameIdx = authenticMode ? Math.floor(exactFrame) : Math.floor(activeOsIdx / frameSamples);
+
+            if (frameIdx !== prevFrameIdx || ch.smoothSlide || !authenticMode) {
+              prevFrameIdx = frameIdx;
+              const totalEnvFrames = Math.max(1, atkF + susF + decF);
+              const fPos = authenticMode ? frameIdx : exactFrame;
+
+              let env = 0;
+              if (fPos < atkF) {
+                env = atkF > 0 ? fPos / atkF : 1;
+              } else if (fPos < atkF + susF) {
+                env = 1.0;
+              } else {
+                const dPos = fPos - (atkF + susF);
+                env = Math.max(0, 1.0 - dPos / decF);
+              }
+              if (authenticMode && ch.quantize4bit) {
+                env = Math.round(env * 15) / 15;
+              }
+              curEnv = env;
+
+              const progress = clamp(fPos / totalEnvFrames, 0, 1);
+              const curved = Math.pow(progress, ch.slideCurve || 1);
+
+              if (ch.type === "noise") {
+                let nIdx = ch.baseFreq + (ch.endFreq - ch.baseFreq) * curved;
+                if (toneShift !== 0) nIdx += toneShift * 1.5;
+                if (ch.vibratoDepth > 0) {
+                  nIdx += Math.sin(activeSec * ch.vibratoSpeed * Math.PI * 2) * (ch.vibratoDepth * 10);
+                }
+                curFreq = clamp(Math.round(nIdx), 0, 15);
+              } else {
+                let freq = ch.baseFreq + (ch.endFreq - ch.baseFreq) * curved;
+                if (ch.steps && ch.steps.length > 0) {
+                  const rawStep = Math.floor(fPos / stepF);
+                  const loopCount = Math.floor(rawStep / ch.steps.length);
+                  const sIdx = ch.stepLoop
+                    ? rawStep % ch.steps.length
+                    : Math.min(rawStep, ch.steps.length - 1);
+                  freq = ch.baseFreq * ch.steps[sIdx];
+                  if (ch.stepLoop && ch.stepSlidePerLoop && ch.stepSlidePerLoop !== 1) {
+                    freq *= Math.pow(ch.stepSlidePerLoop, loopCount);
+                  }
+                }
+                if (ch.vibratoDepth > 0) {
+                  freq *= 1 + Math.sin(activeSec * ch.vibratoSpeed * Math.PI * 2) * ch.vibratoDepth;
+                }
+                curFreq = clamp(freq * pitchMul, 25, 11000);
+              }
+            }
+
+            if (curEnv <= 0.001) continue;
+
+            let sample = 0;
+            if (ch.type === "pulse") {
+              sample = phase < duty ? 1.0 : -1.0;
+              phase += curFreq / osRate;
+              if (phase >= 1.0) phase -= Math.floor(phase);
+            } else if (ch.type === "triangle") {
+              const triIdx = Math.floor(phase * 32) & 31;
+              sample = (FC_TRI_TABLE[triIdx] / 7.5) - 1.0;
+              phase += curFreq / osRate;
+              if (phase >= 1.0) phase -= Math.floor(phase);
+            } else if (ch.type === "noise") {
+              const period = FC_NOISE_PERIODS[curFreq | 0];
+              noiseAcc += 1789773 / osRate;
+              while (noiseAcc >= period) {
+                noiseAcc -= period;
+                const tap = noiseShort ? 6 : 1;
+                const fb = (lfsr & 1) ^ ((lfsr >> tap) & 1);
+                lfsr = (lfsr >> 1) | (fb << 14);
+                if (lfsr === 0) lfsr = 1;
+                noiseOut = (lfsr & 1) ? 1.0 : -1.0;
+              }
+              sample = noiseOut;
+            }
+
+            accSample += sample * curEnv * (ch.gain || 1.0);
+          }
+
+          chBuf[i] = accSample / OS;
+        }
+
+        for (let i = 0; i < totalSamples; i++) {
+          out[i] += chBuf[i];
+        }
+      }
+
+      let prevX = 0;
+      let prevY = 0;
+      const fadeLen = Math.min(Math.floor(sampleRate * 0.008), Math.floor(totalSamples * 0.15));
+
+      for (let i = 0; i < totalSamples; i++) {
+        const x = out[i] * 0.45 * gainMul;
+        const y = x - prevX + 0.996 * prevY;
+        prevX = x;
+        prevY = y;
+
+        let s = Math.tanh(y * 1.15);
+        if (fadeLen > 0 && i > totalSamples - fadeLen) {
+          s *= (totalSamples - i) / fadeLen;
+        }
+        out[i] = clamp(s, -0.98, 0.98);
+      }
+
+      return out;
+    }
+
+    renderFcSfxBuffer(recipe) {
+      if (!this.ctx || !recipe) return null;
+      const sampleRate = this.ctx.sampleRate || 44100;
+      const authenticMode = recipe.authentic !== false;
+      const pcm = this.synthesizeFcSfxPCM(recipe, sampleRate, authenticMode);
+      if (!pcm) return null;
+      const buf = this.ctx.createBuffer(1, pcm.length, sampleRate);
+      buf.getChannelData(0).set(pcm);
+      return buf;
+    }
+
+    playFcSfx(name, volScale = 1.0) {
+      const ctx = this.ctx;
+      if (!ctx || this.muted || ctx.state !== "running") return false;
+      let buf = this.fcSfxBuffers[name];
+      if (!buf && this.fcSfxDefs[name]) {
+        buf = this.renderFcSfxBuffer(this.fcSfxDefs[name]);
+        this.fcSfxBuffers[name] = buf;
+      }
+      if (!buf) return false;
+
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const gain = ctx.createGain();
+      gain.gain.value = volScale;
+      src.connect(gain);
+      gain.connect(this.masterGain);
+      src.start(ctx.currentTime);
+      return true;
+    }
+
+    // wallBreak (explosion.json) 用の jsfxr デコーダ
     renderJsfxrBuffer(raw) {
       if (!this.ctx || !raw) return null;
       const ps = {
@@ -623,186 +882,12 @@
       return true;
     }
 
-    // デューティ比（12.5% / 25% / 50%）矩形波の生成
-    createPulseWave(duty) {
-      const harmonics = 32;
-      const real = new Float32Array(harmonics + 1);
-      const imag = new Float32Array(harmonics + 1);
-      for (let n = 1; n <= harmonics; n++) {
-        const k = 2 / (Math.PI * n);
-        real[n] = k * Math.sin(2 * Math.PI * n * duty);
-        imag[n] = k * (1 - Math.cos(2 * Math.PI * n * duty));
-      }
-      return this.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
-    }
-
-    // 2A03風 32段階量子化三角波の生成
-    createNesTriangleWave() {
-      const len = 32;
-      const steps = new Float32Array(len);
-      for (let i = 0; i < 16; i++) {
-        steps[i] = (i / 15) * 2 - 1;
-      }
-      for (let i = 16; i < 32; i++) {
-        steps[i] = ((31 - i) / 15) * 2 - 1;
-      }
-      const harmonics = 24;
-      const real = new Float32Array(harmonics + 1);
-      const imag = new Float32Array(harmonics + 1);
-      for (let k = 1; k <= harmonics; k++) {
-        let re = 0;
-        let im = 0;
-        for (let i = 0; i < len; i++) {
-          const angle = (2 * Math.PI * k * i) / len;
-          re += steps[i] * Math.cos(angle);
-          im += steps[i] * Math.sin(angle);
-        }
-        real[k] = (2 / len) * re;
-        imag[k] = (2 / len) * im;
-      }
-      return this.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
-    }
-
-    // 2A03風 15-bit LFSR 疑似ノイズバッファ生成
-    createLfsrNoiseBuffer(shortMode, length) {
-      const rate = 22050;
-      const buf = this.ctx.createBuffer(1, length, rate);
-      const data = buf.getChannelData(0);
-      let reg = 1;
-      const tapShift = shortMode ? 6 : 1;
-      for (let i = 0; i < length; i++) {
-        const bit = (reg & 1) ^ ((reg >> tapShift) & 1);
-        reg = (reg >> 1) | (bit << 14);
-        data[i] = (reg & 1) ? 0.9 : -0.9;
-      }
-      return buf;
-    }
-
     canTrigger(key, minGapMs) {
       const now = this.nowMs();
       const prev = this.lastPlayTime[key] || 0;
       if (now - prev < minGapMs) return false;
       this.lastPlayTime[key] = now;
       return true;
-    }
-
-    playTone(opts) {
-      const ctx = this.ctx;
-      if (!ctx || this.muted || ctx.state !== "running") return;
-
-      const start = opts.startTime != null ? opts.startTime : ctx.currentTime;
-      const dur = Math.max(0.012, opts.dur || 0.06);
-      const vol = opts.vol != null ? opts.vol : 0.18;
-      const attack = opts.attack != null ? opts.attack : 0.002;
-      const holdRatio = opts.holdRatio != null ? opts.holdRatio : 0.25;
-
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      if (opts.wave === "tri" && this.triWave) {
-        osc.setPeriodicWave(this.triWave);
-      } else if (opts.duty && this.pulseWaves[opts.duty]) {
-        osc.setPeriodicWave(this.pulseWaves[opts.duty]);
-      } else {
-        osc.type = opts.wave === "tri" ? "triangle" : "square";
-      }
-
-      const fStart = Math.max(30, opts.freq || 440);
-      osc.frequency.setValueAtTime(fStart, start);
-
-      if (Array.isArray(opts.steps) && opts.steps.length > 0) {
-        const stepDur = dur / opts.steps.length;
-        for (let i = 0; i < opts.steps.length; i++) {
-          osc.frequency.setValueAtTime(Math.max(30, opts.steps[i]), start + stepDur * i);
-        }
-      } else if (opts.freqEnd != null) {
-        if (opts.stepSweep) {
-          const nSteps = Math.max(2, Math.round(dur * 60));
-          for (let i = 1; i <= nSteps; i++) {
-            const t = i / nSteps;
-            const f = opts.expSweep
-              ? fStart * Math.pow(opts.freqEnd / fStart, t)
-              : fStart + (opts.freqEnd - fStart) * t;
-            osc.frequency.setValueAtTime(Math.max(30, f), start + (dur * i) / nSteps);
-          }
-        } else {
-          osc.frequency.linearRampToValueAtTime(Math.max(30, opts.freqEnd), start + dur);
-        }
-      }
-
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.linearRampToValueAtTime(vol, start + Math.min(attack, dur * 0.4));
-      const holdTime = start + Math.max(attack, dur * holdRatio);
-      gain.gain.setValueAtTime(vol, holdTime);
-      if (opts.cutEnd) {
-        gain.gain.setValueAtTime(vol * 0.85, start + Math.max(0.006, dur - 0.004));
-        gain.gain.linearRampToValueAtTime(0.0001, start + dur);
-      } else {
-        gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
-      }
-
-      osc.connect(gain);
-      gain.connect(this.masterGain);
-      osc.start(start);
-      osc.stop(start + dur + 0.015);
-    }
-
-    playNoise(opts) {
-      const ctx = this.ctx;
-      if (!ctx || this.muted || ctx.state !== "running") return;
-      const buf = opts.short ? this.noiseShortBuf : this.noiseLongBuf;
-      if (!buf) return;
-
-      const start = opts.startTime != null ? opts.startTime : ctx.currentTime;
-      const dur = Math.max(0.015, opts.dur || 0.12);
-      const vol = opts.vol != null ? opts.vol : 0.22;
-      const rateStart = Math.max(0.03, opts.rate || 0.5);
-
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.loop = true;
-      src.playbackRate.setValueAtTime(rateStart, start);
-
-      if (opts.rateEnd != null) {
-        src.playbackRate.linearRampToValueAtTime(Math.max(0.03, opts.rateEnd), start + dur);
-      }
-
-      const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.linearRampToValueAtTime(vol, start + 0.003);
-      if (opts.holdRatio != null && opts.holdRatio > 0) {
-        gain.gain.setValueAtTime(vol, start + dur * opts.holdRatio);
-      }
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
-
-      src.connect(gain);
-      gain.connect(this.masterGain);
-      src.start(start, Math.random() * 0.2);
-      src.stop(start + dur + 0.02);
-    }
-
-    playSequence(notes, opt = {}) {
-      const ctx = this.ctx;
-      if (!ctx || this.muted || ctx.state !== "running") return;
-      let t = opt.startTime != null ? opt.startTime : ctx.currentTime;
-      for (let i = 0; i < notes.length; i++) {
-        const n = notes[i];
-        const d = n.dur || 0.1;
-        if (n.freq && n.freq > 0) {
-          this.playTone({
-            startTime: t,
-            dur: n.gate != null ? n.gate : d * 0.88,
-            freq: n.freq,
-            freqEnd: n.freqEnd,
-            wave: n.wave || opt.wave || "pulse",
-            duty: n.duty || opt.duty || 0.25,
-            vol: n.vol != null ? n.vol : (opt.vol != null ? opt.vol : 0.18),
-            holdRatio: n.holdRatio != null ? n.holdRatio : 0.45,
-            stepSweep: !!n.stepSweep
-          });
-        }
-        t += d;
-      }
     }
 
     queuePendingSound(name, opt) {
@@ -847,499 +932,22 @@
       const ctx = this.ctx;
       if (this.muted || !ctx || ctx.state !== "running") return;
 
-      const t = ctx.currentTime;
+      if (name === "walk" && this.walkStyle === "off") return;
 
-      switch (name) {
-        case "walk": {
-          if (this.walkStyle === "off") return;
-          if (!this.canTrigger("walk", 65)) return;
-          const alt = (this.walkAlt++) & 1;
-          if (this.walkStyle === "mario83") {
-            const seq = alt === 0 ? [220, 294, 247] : [247, 330, 262];
-            this.playTone({
-              startTime: t,
-              dur: 0.058,
-              steps: seq,
-              duty: 0.25,
-              vol: 0.075,
-              holdRatio: 0.65,
-              cutEnd: true
-            });
-            this.playTone({
-              startTime: t,
-              dur: 0.052,
-              steps: [seq[0] * 0.5, seq[1] * 0.5],
-              wave: "tri",
-              vol: 0.07,
-              holdRatio: 0.6,
-              cutEnd: true
-            });
-          } else if (this.walkStyle === "mario83_low") {
-            const seq = alt === 0 ? [175, 233, 196] : [196, 262, 220];
-            this.playTone({
-              startTime: t,
-              dur: 0.06,
-              steps: seq,
-              wave: "tri",
-              vol: 0.13,
-              holdRatio: 0.7,
-              cutEnd: true
-            });
-          } else {
-            this.playTone({
-              startTime: t,
-              dur: 0.028,
-              freq: alt === 0 ? 160 : 190,
-              freqEnd: 95,
-              wave: "tri",
-              vol: 0.11,
-              stepSweep: true
-            });
-          }
-          break;
-        }
+      if (this.fcSfxDefs[name]) {
+        const meta = this.fcSfxOptions[name] || {};
+        const gap = meta.minGapMs != null ? meta.minGapMs : 40;
+        const vol = opt.volScale != null ? opt.volScale : (meta.volScale != null ? meta.volScale : 0.85);
+        if (!this.canTrigger(name, gap)) return;
+        this.playFcSfx(name, vol);
+        return;
+      }
 
-        case "ladder": {
-          if (!this.canTrigger("ladder", 45)) return;
-          const stepAlt = (this.ladderAlt++) & 1;
-          const up = opt.up !== false;
-          const base = up ? (stepAlt ? 340 : 290) : (stepAlt ? 250 : 215);
-          this.playTone({
-            startTime: t,
-            dur: 0.036,
-            freq: base,
-            freqEnd: base * (up ? 1.18 : 0.84),
-            wave: "tri",
-            vol: 0.13,
-            stepSweep: true,
-            cutEnd: true
-          });
-          break;
-        }
-
-        case "hammerSwing": {
-          if (!this.canTrigger("hammerSwing", 70)) return;
-          const dur = opt.golden ? 0.055 : 0.085;
-          this.playNoise({
-            startTime: t,
-            dur,
-            rate: 0.55,
-            rateEnd: 0.18,
-            vol: 0.14
-          });
-          this.playTone({
-            startTime: t,
-            dur: dur * 0.85,
-            freq: opt.golden ? 420 : 290,
-            freqEnd: 110,
-            wave: "tri",
-            vol: 0.14,
-            stepSweep: true
-          });
-          break;
-        }
-
-        case "hammerHitWall": {
-          if (!this.canTrigger("hammerHitWall", 45)) return;
-          this.playTone({
-            startTime: t,
-            dur: 0.075,
-            steps: [680, 520, 410],
-            duty: 0.125,
-            vol: 0.17,
-            holdRatio: 0.4
-          });
-          this.playNoise({
-            startTime: t,
-            dur: 0.04,
-            short: true,
-            rate: 0.72,
-            vol: 0.12
-          });
-          break;
-        }
-
-        case "wallBreak": {
-          if (!this.canTrigger("wallBreak", 35)) return;
-          this.playSfxr("wallBreak", 0.75);
-          break;
-        }
-
-        case "doorOpen": {
-          if (!this.canTrigger("doorOpen", 50)) return;
-          this.playTone({
-            startTime: t,
-            dur: 0.14,
-            freq: 260,
-            freqEnd: 660,
-            duty: 0.125,
-            vol: 0.15,
-            stepSweep: true
-          });
-          this.playNoise({
-            startTime: t + 0.02,
-            dur: 0.07,
-            short: true,
-            rate: 0.45,
-            vol: 0.08
-          });
-          break;
-        }
-
-        case "doorClose": {
-          if (!this.canTrigger("doorClose", 60)) return;
-          this.playTone({
-            startTime: t,
-            dur: 0.06,
-            freq: 360,
-            freqEnd: 170,
-            duty: 0.25,
-            vol: 0.08,
-            stepSweep: true
-          });
-          break;
-        }
-
-        case "bombExplode": {
-          if (!this.canTrigger("bombExplode", 55)) return;
-          this.playNoise({
-            startTime: t,
-            dur: 0.42,
-            rate: 0.48,
-            rateEnd: 0.06,
-            vol: 0.34,
-            holdRatio: 0.28
-          });
-          this.playTone({
-            startTime: t,
-            dur: 0.34,
-            freq: 155,
-            freqEnd: 38,
-            wave: "tri",
-            vol: 0.28,
-            stepSweep: true
-          });
-          break;
-        }
-
-        case "bombWave": {
-          if (!this.canTrigger("bombWave", 40)) return;
-          this.playNoise({
-            startTime: t,
-            dur: 0.09,
-            rate: 0.38,
-            rateEnd: 0.15,
-            vol: 0.14
-          });
-          break;
-        }
-
-        case "timedBeep": {
-          if (!this.canTrigger("timedBeep", 120)) return;
-          this.playTone({
-            startTime: t,
-            dur: 0.05,
-            freq: opt.urgent ? 1175 : 880,
-            duty: 0.125,
-            vol: 0.12,
-            holdRatio: 0.55,
-            cutEnd: true
-          });
-          break;
-        }
-
-        case "pillarFall": {
-          if (!this.canTrigger("pillarFall", 60)) return;
-          this.playTone({
-            startTime: t,
-            dur: 0.16,
-            freq: 190,
-            freqEnd: 58,
-            wave: "tri",
-            vol: 0.24,
-            stepSweep: true
-          });
-          this.playNoise({
-            startTime: t,
-            dur: 0.12,
-            rate: 0.34,
-            rateEnd: 0.12,
-            vol: 0.18
-          });
-          break;
-        }
-
-        case "drumTrap": {
-          if (!this.canTrigger("drumTrap", 120)) return;
-          this.playTone({
-            startTime: t,
-            dur: 0.22,
-            steps: [310, 220, 145, 95],
-            duty: 0.5,
-            vol: 0.22
-          });
-          this.playNoise({
-            startTime: t + 0.03,
-            dur: 0.14,
-            short: true,
-            rate: 0.26,
-            vol: 0.18
-          });
-          break;
-        }
-
-        case "knockdown": {
-          if (!this.canTrigger("knockdown", 80)) return;
-          this.playTone({
-            startTime: t,
-            dur: 0.22,
-            freq: 540,
-            freqEnd: 150,
-            duty: 0.25,
-            vol: 0.17,
-            stepSweep: true
-          });
-          break;
-        }
-
-        case "stun": {
-          if (!this.canTrigger("stun", 90)) return;
-          this.playTone({
-            startTime: t,
-            dur: 0.11,
-            freq: 145,
-            freqEnd: 68,
-            wave: "tri",
-            vol: 0.21,
-            stepSweep: true
-          });
-          this.playNoise({
-            startTime: t,
-            dur: 0.065,
-            rate: 0.3,
-            rateEnd: 0.12,
-            vol: 0.12
-          });
-          break;
-        }
-
-        case "shoeJet": {
-          if (!this.canTrigger("shoeJet", 75)) return;
-          this.playNoise({
-            startTime: t,
-            dur: 0.07,
-            rate: 0.35,
-            rateEnd: 0.24,
-            vol: 0.11
-          });
-          this.playTone({
-            startTime: t,
-            dur: 0.055,
-            freq: 135,
-            freqEnd: 115,
-            wave: "tri",
-            vol: 0.08
-          });
-          break;
-        }
-
-        case "keyPickup": {
-          if (!this.canTrigger("keyPickup", 50)) return;
-          this.playSequence(
-            [
-              { freq: 659, dur: 0.055 },
-              { freq: 831, dur: 0.055 },
-              { freq: 988, dur: 0.055 },
-              { freq: 1319, dur: 0.11 }
-            ],
-            { startTime: t, duty: 0.125, vol: 0.17 }
-          );
-          break;
-        }
-
-        case "shoePodOpening": {
-          if (!this.canTrigger("shoePodOpening", 200)) return;
-          this.playSequence(
-            [
-              { freq: 392, dur: 0.07 },
-              { freq: 494, dur: 0.07 },
-              { freq: 587, dur: 0.07 },
-              { freq: 784, dur: 0.07 },
-              { freq: 988, dur: 0.09 },
-              { freq: 1175, dur: 0.18 }
-            ],
-            { startTime: t, duty: 0.25, vol: 0.17 }
-          );
-          break;
-        }
-
-        case "shoePickup": {
-          if (!this.canTrigger("shoePickup", 150)) return;
-          this.playSequence(
-            [
-              { freq: 523, dur: 0.065 },
-              { freq: 659, dur: 0.065 },
-              { freq: 784, dur: 0.065 },
-              { freq: 1047, dur: 0.07 },
-              { freq: 784, dur: 0.065 },
-              { freq: 1047, dur: 0.2 }
-            ],
-            { startTime: t, duty: 0.25, vol: 0.2 }
-          );
-          break;
-        }
-
-        case "enemyStun": {
-          if (!this.canTrigger("enemyStun", 70)) return;
-          this.playTone({
-            startTime: t,
-            dur: 0.12,
-            steps: [620, 440, 560, 350],
-            duty: 0.125,
-            vol: 0.14
-          });
-          break;
-        }
-
-        case "orbSpawn": {
-          if (!this.canTrigger("orbSpawn", 200)) return;
-          this.playNoise({
-            startTime: t,
-            dur: 0.26,
-            short: true,
-            rate: 0.22,
-            rateEnd: 0.52,
-            vol: 0.1
-          });
-          this.playTone({
-            startTime: t,
-            dur: 0.26,
-            freq: 180,
-            freqEnd: 360,
-            duty: 0.125,
-            vol: 0.11,
-            stepSweep: true
-          });
-          break;
-        }
-
-        case "start": {
-          if (!this.canTrigger("start", 200)) return;
-          this.playSequence(
-            [
-              { freq: 440, dur: 0.08 },
-              { freq: 554, dur: 0.08 },
-              { freq: 659, dur: 0.08 },
-              { freq: 880, dur: 0.18 }
-            ],
-            { startTime: t, duty: 0.25, vol: 0.19 }
-          );
-          break;
-        }
-
-        case "clear": {
-          if (!this.canTrigger("clear", 500)) return;
-          this.playSequence(
-            [
-              { freq: 523, dur: 0.11 },
-              { freq: 659, dur: 0.11 },
-              { freq: 784, dur: 0.11 },
-              { freq: 1047, dur: 0.18 },
-              { freq: 784, dur: 0.11 },
-              { freq: 880, dur: 0.11 },
-              { freq: 988, dur: 0.11 },
-              { freq: 1047, dur: 0.42 }
-            ],
-            { startTime: t, duty: 0.25, vol: 0.2 }
-          );
-          this.playSequence(
-            [
-              { freq: 262, dur: 0.22 },
-              { freq: 196, dur: 0.22 },
-              { freq: 220, dur: 0.22 },
-              { freq: 262, dur: 0.48 }
-            ],
-            { startTime: t, wave: "tri", vol: 0.22 }
-          );
-          break;
-        }
-
-        case "playerHitStop": {
-          if (!this.canTrigger("playerHitStop", 200)) return;
-          this.playTone({
-            startTime: t,
-            dur: 0.14,
-            steps: [660, 494, 440],
-            duty: 0.5,
-            vol: 0.2
-          });
-          break;
-        }
-
-        case "playerDeathFall": {
-          if (!this.canTrigger("playerDeathFall", 300)) return;
-          this.playSequence(
-            [
-              { freq: 587, dur: 0.09 },
-              { freq: 523, dur: 0.09 },
-              { freq: 494, dur: 0.09 },
-              { freq: 440, dur: 0.09 },
-              { freq: 392, dur: 0.1 },
-              { freq: 330, dur: 0.11 },
-              { freq: 262, dur: 0.22, freqEnd: 131, stepSweep: true }
-            ],
-            { startTime: t, duty: 0.5, vol: 0.19 }
-          );
-          break;
-        }
-
-        case "tryAgain": {
-          if (!this.canTrigger("tryAgain", 400)) return;
-          this.playSequence(
-            [
-              { freq: 330, dur: 0.24 },
-              { freq: 311, dur: 0.24 },
-              { freq: 294, dur: 0.24 },
-              { freq: 262, dur: 0.36 },
-              { freq: 196, dur: 0.48, freqEnd: 147, stepSweep: true }
-            ],
-            { startTime: t, duty: 0.25, vol: 0.19 }
-          );
-          this.playSequence(
-            [
-              { freq: 165, dur: 0.48 },
-              { freq: 147, dur: 0.48 },
-              { freq: 131, dur: 0.6 }
-            ],
-            { startTime: t, wave: "tri", vol: 0.2 }
-          );
-          break;
-        }
-
-        case "battleScore": {
-          if (!this.canTrigger("battleScore", 50)) return;
-          this.playSequence(
-            [
-              { freq: 784, dur: 0.05 },
-              { freq: 1047, dur: 0.09 }
-            ],
-            { startTime: t, duty: 0.125, vol: 0.14 }
-          );
-          break;
-        }
-
-        case "battleEnd": {
-          if (!this.canTrigger("battleEnd", 300)) return;
-          this.playSequence(
-            [
-              { freq: 880, dur: 0.12 },
-              { freq: 659, dur: 0.12 },
-              { freq: 880, dur: 0.24 }
-            ],
-            { startTime: t, duty: 0.5, vol: 0.2 }
-          );
-          break;
-        }
+      if (this.sfxrDefs[name]) {
+        const gap = name === "wallBreak" ? 35 : 40;
+        const vol = opt.volScale != null ? opt.volScale : 0.75;
+        if (!this.canTrigger(name, gap)) return;
+        this.playSfxr(name, vol);
       }
     }
   }
