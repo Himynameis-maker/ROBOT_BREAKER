@@ -100,6 +100,9 @@
       this.tryAgainFinished = false;
       this.musicTempoRate = 1.0;
       this.onMusicSlowDown = typeof config.onMusicSlowDown === "function" ? config.onMusicSlowDown : null;
+      this.sound = config.soundEngine || null;
+      this._walkSoundVis = null;
+      this._lastLadderStep = null;
       this.allBackStop = false;
       this.allBackTimer = 0;
       this.allBackDone = false;
@@ -189,6 +192,150 @@
 
       this.initKeyAndShoePodState();
       this.orb = this.createInitialOrb();
+    }
+
+    playSound(name, opt) {
+      if (this.sound && typeof this.sound.play === "function") {
+        this.sound.play(name, opt);
+      }
+    }
+
+    // 歩行アニメーションの踏み込み（4コマ中の0/2）と歩行音を同期
+    updatePlayerStepSounds() {
+      const slot = this.player;
+      if (!slot) return;
+
+      let vis = this._walkSoundVis;
+      if (!vis) {
+        vis = {
+          lastState: -1,
+          lastX: slot.x,
+          lastVisWalkFrames: 0,
+          carryOffset: 0,
+          inHorizChain: false,
+          lastStep: -1
+        };
+        this._walkSoundVis = vis;
+      }
+
+      const s = slot.state;
+      const bits = slot.bits || 0;
+      const wf = slot.walkFrames || 0;
+      let step = -1;
+      let useWalk = false;
+
+      if (s === 1) {
+        if (vis.lastState !== 1) {
+          vis.carryOffset = vis.inHorizChain ? ((vis.lastVisWalkFrames + 1) - wf) : 0;
+        }
+        const visWf = Math.max(0, wf + vis.carryOffset);
+        step = Math.floor(visWf / 5) & 3;
+        vis.lastVisWalkFrames = visWf;
+        vis.inHorizChain = true;
+        useWalk = true;
+      } else if (s === 8 || s === 9) {
+        let visWf = 0;
+        if (vis.inHorizChain) {
+          const movedOrEntered = (slot.x !== vis.lastX) || (vis.lastState !== s);
+          visWf = vis.lastVisWalkFrames + (movedOrEntered ? 1 : 0);
+        }
+        step = Math.floor(visWf / 5) & 3;
+        vis.lastVisWalkFrames = visWf;
+        vis.inHorizChain = true;
+        useWalk = true;
+      } else if (s === 0 && vis.lastState === 9 && (bits & (LEFT | RIGHT)) !== 0) {
+        const visWf = vis.lastVisWalkFrames + 1;
+        step = Math.floor(visWf / 5) & 3;
+        vis.lastVisWalkFrames = visWf;
+        vis.inHorizChain = true;
+        useWalk = true;
+      } else {
+        vis.lastVisWalkFrames = 0;
+        vis.carryOffset = 0;
+        vis.inHorizChain = false;
+        vis.lastStep = -1;
+      }
+
+      if (useWalk && (step === 0 || step === 2) && step !== vis.lastStep) {
+        this.playSound("walk");
+      }
+      vis.lastStep = step;
+      vis.lastState = s;
+      vis.lastX = slot.x;
+
+      // はしご昇降（State 2 / 3 / 6）の1段移動と音を同期
+      if (s === 2 || s === 3 || s === 6) {
+        const y = slot.y;
+        const topY = slot.topY;
+        const prom = slot.prom;
+        const n = slot.n;
+        const kind = slot.kind;
+        const d = slot.dir;
+        let vy = y;
+        let isHold = false;
+
+        if (s === 3) {
+          if (kind === "enter") {
+            if (n <= 4) { vy = y; isHold = true; }
+            else { vy = topY + 31; }
+          } else if (kind === "arrive") {
+            vy = y; isHold = true;
+          } else if (kind === "enter_top") {
+            if (n <= 3) { vy = topY; isHold = true; }
+            else if (n <= 7) { vy = topY + 3; }
+            else { vy = topY + 7; }
+          } else if (kind === "arrive_top") {
+            if (n <= 3) { vy = topY + 7; }
+            else if (n <= 8) { vy = topY + 3; }
+            else { vy = topY; isHold = true; }
+          }
+        } else if (s === 6) {
+          if (kind === "enter_top_cont") {
+            if (n <= 5) { vy = topY; isHold = true; }
+            else if (n <= 10) { vy = topY + 3; }
+            else { vy = topY + 7; }
+          } else if (kind === "cont") {
+            if (d & DOWN) {
+              if (n <= 1) vy = y - 1;
+              else if (n <= 6) vy = y + 3;
+              else vy = y + 7;
+            } else {
+              if (n <= 3) vy = y + 7;
+              else if (n <= 9) vy = y + 3;
+              else vy = y - 1;
+            }
+          }
+        } else if (s === 2) {
+          if (prom === 31 && y === topY) {
+            vy = topY + 7;
+          } else if (prom === 1 && y === topY + 32) {
+            vy = topY + 31;
+          } else if ((d & UP) && prom >= 30) {
+            vy = topY + 7;
+          } else {
+            vy = y;
+          }
+        }
+
+        if (isHold) {
+          this._lastLadderStep = null;
+        } else {
+          const stepIndex = Math.round((vy - 3) / 4);
+          if (this._lastLadderStep !== null && stepIndex !== this._lastLadderStep) {
+            this.playSound("ladder", { up: (d & DOWN) === 0 });
+          }
+          this._lastLadderStep = stepIndex;
+        }
+      } else {
+        this._lastLadderStep = null;
+      }
+
+      // 空飛ぶシューズ噴射（State 12 で左右入力中のみ）
+      if (s === 12 && (slot.shoeHoverTimer || 0) === 0) {
+        if ((this.f % 5) === 0) {
+          this.playSound("shoeJet");
+        }
+      }
     }
 
     createInitialOrb() {
@@ -292,12 +439,16 @@
             if (this.countRemainingKeys() === 0 && this.shoePodState === "closed") {
               this.shoePodState = "opening";
               this.shoePodOpenTimer = 60;
+              this.playSound("shoePodOpening");
+            } else {
+              this.playSound("keyPickup");
             }
           } else if (t === TILE.SHOE_POD && this.shoePodState === "open") {
             this.setTile(row, col, TILE.EMPTY);
             this.shoePodState = "collected";
             p.hasFlyingShoes = true;
             this.pickupEffects.push({ row, col, kind: "shoe", timer: 24, maxTimer: 24 });
+            this.playSound("shoePickup");
           }
         }
       }
@@ -509,6 +660,7 @@
       door.openTimer = openDuration;
       door.byPlayer = !!byPlayer;
       this.setTile(row, c, byPlayer ? TILE.DOOR_OPENING_1 : (TILE.DOOR_OPENING_1 | 0x08));
+      this.playSound("doorOpen");
       return true;
     }
 
@@ -554,6 +706,7 @@
           if (door.openTimer <= 0) {
             this.setTile(door.row, door.col, TILE.DOOR_CLOSING_1);
             door.state = 5;
+            this.playSound("doorClose");
           }
         } else if (door.state === 5) {
           this.setTile(door.row, door.col, TILE.DOOR_CLOSING_2);
@@ -618,6 +771,7 @@
             this.crumblingLadders.delete(this.cellKey(e.row, e.col));
             this.setTile(e.row, e.col, e.hasBelowSame ? TILE.HOLE_CRUMBLED : TILE.EMPTY);
             this.breakEffects.push({ row: e.row, col: e.col, tile: TILE.BREAK_LADDER, timer: 16, maxTimer: 16 });
+            this.playSound("wallBreak");
             if (this.battleManager) {
               this.battleManager.onEvent({
                 type: "ladderDestroyed",
@@ -650,6 +804,7 @@
         timer: 1,
         byPlayer: !!byPlayer
       });
+      this.playSound("pillarFall");
 
       if (row >= 1 && this.fallingPillars.length < 12) {
         const aboveRow = row - 1;
@@ -775,9 +930,12 @@
 
       if (tile === TILE.BREAK_LADDER) {
         const started = this.startCrumblingLadder(row, c, byPlayer, true, true);
-        if (started && this.battleManager && !byPlayer && this.battleManager.hunterAI &&
-            typeof this.battleManager.hunterAI.notifyNonDoorHit === "function") {
-          this.battleManager.hunterAI.notifyNonDoorHit();
+        if (started) {
+          this.playSound("hammerHitWall");
+          if (this.battleManager && !byPlayer && this.battleManager.hunterAI &&
+              typeof this.battleManager.hunterAI.notifyNonDoorHit === "function") {
+            this.battleManager.hunterAI.notifyNonDoorHit();
+          }
         }
         return started;
       }
@@ -812,6 +970,7 @@
       const hp = tile & 0x07;
       if (hp > 1) {
         this.setTile(row, c, tile - 1);
+        this.playSound("hammerHitWall");
       } else {
         this.setTile(row, c, TILE.EMPTY);
         this.breakEffects.push({ row, col: c, tile, timer: 16, maxTimer: 16 });
@@ -824,6 +983,7 @@
           kind: "wall",
           byPlayer: !!byPlayer
         });
+        this.playSound("wallBreak");
         if (this.battleManager) {
           this.battleManager.onEvent({
             type: "wallDestroyed",
@@ -841,6 +1001,7 @@
       const c = this.wrapCol(col);
       this.setTile(row, c, TILE.EMPTY);
       this.openAllDoors(byPlayer, 0x20);
+      this.playSound("bombExplode");
       this.explosions.push({
         row,
         col: c,
@@ -860,6 +1021,7 @@
         this.setTile(row, c, TILE.EMPTY);
       }
       this.openAllDoors(true, 0x20);
+      this.playSound("bombExplode");
       this.explosions.push({
         row,
         col: c,
@@ -879,7 +1041,12 @@
       for (let i = this.timedBombs.length - 1; i >= 0; i--) {
         const tb = this.timedBombs[i];
         tb.remainFrames -= 1;
-        if (tb.remainFrames > 0) continue;
+        if (tb.remainFrames > 0) {
+          if (tb.remainFrames <= 600 && ((600 - tb.remainFrames) % 30 === 0)) {
+            this.playSound("timedBeep", { urgent: tb.remainFrames <= 180 });
+          }
+          continue;
+        }
 
         this.timedBombs.splice(i, 1);
         if (tb.falling) {
@@ -964,6 +1131,7 @@
           const afterTile = this.getTile(w.row, w.col);
           if (t === TILE.BREAK_LADDER || afterTile !== TILE.EMPTY) {
             this.explosions.push({ row: w.row, col: w.col, timer: 10, maxTimer: 10, age: 0, kind: "spark", byPlayer: waveByPlayer });
+            this.playSound("bombWave");
           }
         }
         if (w.stepsLeft > 1) {
@@ -1119,6 +1287,7 @@
         ob.animCount = 0;
         ob.waveTick = 0;
         ob.disappearDone = false;
+        this.playSound("orbSpawn");
         return;
       }
 
@@ -1258,6 +1427,7 @@
       this.deathVy = 0;
       this.deathFinished = false;
       this.startBannerTimer = 0;
+      this.playSound("playerHitStop");
 
       const viewH = 240;
       const minCamY = -24;
@@ -1275,6 +1445,7 @@
           this.deathPhase = 2;
           this.deathTimer = 0;
           this.deathVy = -3.4;
+          this.playSound("playerDeathFall");
         }
         return;
       }
@@ -1331,6 +1502,7 @@
       if (this.onMusicSlowDown) {
         this.onMusicSlowDown(this.musicTempoRate);
       }
+      this.playSound("tryAgain");
     }
 
     updateTryAgain() {
@@ -1462,11 +1634,13 @@
           this.introFrame = this.introTotalFrames;
           this.startBannerTimer = 72;
           this.snapCameraRequested = true;
+          this.playSound("start");
         } else {
           this.introFrame += 1;
           if (this.introFrame >= this.introTotalFrames) {
             this.introActive = false;
             this.startBannerTimer = 72;
+            this.playSound("start");
           }
         }
         return;
@@ -1509,6 +1683,18 @@
 
       const prevPlayerState = this.player.state;
       this.stepper.step(this.player, this);
+      if (prevPlayerState !== 4 && this.player.state === 4) {
+        this.playSound("hammerSwing", { golden: !!this.player.isGolden });
+      }
+      if (prevPlayerState !== 10 && this.player.state === 10) {
+        this.playSound("knockdown");
+      }
+      if (prevPlayerState !== 11 && this.player.state === 11) {
+        this.playSound("stun");
+      }
+      if (prevPlayerState !== 16 && this.player.state === 16) {
+        this.playSound("drumTrap");
+      }
       if (this.battleManager && prevPlayerState !== 10 && this.player.state === 10) {
         const attackerIsPlayer = this.resolveKnockdownAttacker(this.player, { state: prevPlayerState });
         if (attackerIsPlayer === false) {
@@ -1529,6 +1715,8 @@
       } else {
         this.player.walkFrames = 0;
       }
+      this.updatePlayerStepSounds();
+
       if (!this.isBattleMode && !this.stageCleared && !this.tryAgainActive && this.isStageClearConditionMet()) {
         this.startStageClear();
       }
@@ -1547,6 +1735,9 @@
           }
           const prevHunterState = this.hunter.state;
           this.stepper.step(this.hunter, this);
+          if (prevHunterState !== 16 && this.hunter.state === 16) {
+            this.playSound("drumTrap");
+          }
           if (this.battleManager && prevHunterState !== 10 && this.hunter.state === 10) {
             const attackerIsPlayer = this.resolveKnockdownAttacker(this.hunter, { state: prevHunterState });
             if (attackerIsPlayer === true) {
@@ -1565,21 +1756,25 @@
           }
         }
         if (this.enemyAI && this.enemies.length > 0) {
-          let enemySnap = null;
-          if (this.battleManager) {
-            enemySnap = this.enemies.map(e => ({
-              isBack: !!e.isBack,
-              state: e.state,
-              row: e.row,
-              col: e.col,
-              y: e.y
-            }));
-          }
+          const enemyStatesPrev = this.enemies.map(e => ({
+            isBack: !!e.isBack,
+            state: e.state,
+            row: e.row,
+            col: e.col,
+            y: e.y
+          }));
           this.enemyAI.updateAll(this);
-          if (this.battleManager && enemySnap) {
-            for (let i = 0; i < this.enemies.length; i++) {
-              const e = this.enemies[i];
-              const prev = enemySnap[i];
+          for (let i = 0; i < this.enemies.length; i++) {
+            const e = this.enemies[i];
+            const prev = enemyStatesPrev[i];
+            if (prev.state !== 4 && e.state === 4) {
+              this.playSound("enemyStun");
+            } else if (prev.state !== 10 && e.state === 10) {
+              this.playSound("knockdown");
+            } else if (prev.state !== 16 && e.state === 16) {
+              this.playSound("drumTrap");
+            }
+            if (this.battleManager) {
               // プレイヤーは敵を表→裏に入れたら400点、ハンターは敵を裏→表に出したら400点
               if (!prev.isBack && e.isBack) {
                 const door = this.doorMap.get(this.cellKey(e.row, e.col));
@@ -1623,12 +1818,14 @@
         this.battleManager.updatePopups();
         if (this.isBattleClearConditionMet()) {
           this.battleManager.finish("ALL CLEAR!");
+          this.playSound("battleEnd");
           return;
         }
         this.battleManager.remainFrames -= 1;
         if (this.battleManager.remainFrames <= 0) {
           this.battleManager.remainFrames = 0;
           this.battleManager.finish("TIME UP!");
+          this.playSound("battleEnd");
           return;
         }
         this.f += 1;
@@ -1648,7 +1845,7 @@
             this.clearPhase = 2;
             this.clearTimer = 0;
             this.startBannerTimer = 0;
-            // 将来ここでクリアファンファーレを再生
+            this.playSound("clear");
             return;
           }
         }
