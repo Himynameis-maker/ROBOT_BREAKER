@@ -56,6 +56,12 @@
     }
     button.active { background: #2f6fed; border-color: #5b90ff; }
     button.battle-active { background: #c93b2b; border-color: #ff7c6b; }
+    button.sound-muted { background: #3b2a2e; border-color: #7c4b55; color: #ffb3bd; }
+    .se-test-btn {
+      padding: 4px 8px;
+      font-size: 0.76rem;
+      border-radius: 6px;
+    }
     .dev-panel {
       width: 100%;
       max-width: 580px;
@@ -175,6 +181,7 @@
   <div class="topbar">
     <div id="stageBadge" class="stage-pill">STAGE 1</div>
     <div class="btn-row">
+      <button id="soundBtn" type="button">音ON</button>
       <button id="battleBtn" type="button">バトル</button>
       <button id="resetBtn" type="button">リセット</button>
       <button id="devToggleBtn" type="button" aria-expanded="false">開発</button>
@@ -201,9 +208,29 @@
         <option value="2x">等倍2x (1dot=2px)</option>
         <option value="1x">等倍1x (1dot=1px)</option>
       </select>
+      <select id="walkSoundSelect" aria-label="歩行音スタイル">
+        <option value="mario83">歩行音: 初代マリオ風(矩形+三角)</option>
+        <option value="mario83_low">歩行音: 初代マリオ風(丸い三角波)</option>
+        <option value="retro_step">歩行音: シンプル単音</option>
+        <option value="off">歩行音: なし</option>
+      </select>
       <button id="pauseBtn" type="button">一時停止</button>
       <button id="stepBtn" type="button">+1F</button>
       <a class="link-btn" href="./editor.html">ステージエディタ</a>
+    </div>
+    <div id="seTestRow" class="btn-row">
+      <span style="font-size:0.75rem;color:#9ba7be;">SE試聴:</span>
+      <button class="se-test-btn" type="button" data-se="walk">歩行</button>
+      <button class="se-test-btn" type="button" data-se="ladder">はしご</button>
+      <button class="se-test-btn" type="button" data-se="hammerSwing">振り</button>
+      <button class="se-test-btn" type="button" data-se="hammerHitWall">硬い壁</button>
+      <button class="se-test-btn" type="button" data-se="wallBreak">破壊</button>
+      <button class="se-test-btn" type="button" data-se="bombExplode">爆発</button>
+      <button class="se-test-btn" type="button" data-se="doorOpen">ドア</button>
+      <button class="se-test-btn" type="button" data-se="keyPickup">鍵</button>
+      <button class="se-test-btn" type="button" data-se="shoePickup">靴</button>
+      <button class="se-test-btn" type="button" data-se="clear">クリア</button>
+      <button class="se-test-btn" type="button" data-se="playerDeathFall">ミス</button>
     </div>
     <div id="hud" class="hud">読み込み中...</div>
     <div class="hint">
@@ -230,6 +257,7 @@
   <script src="./src/enemy_ai.js"></script>
   <script src="./src/battle_map.js"></script>
   <script src="./src/battle_mode.js"></script>
+  <script src="./src/sound_engine.js"></script>
   <script src="./src/game_world.js"></script>
   <script src="./data/sprites.js"></script>
   <script src="./src/renderer.js"></script>
@@ -252,6 +280,7 @@
     (function () {
       const { RIGHT, LEFT, DOWN, UP, HAMMER, GameWorld, generateBattleStage } = window.BreakerGame;
       const { Renderer } = window.BreakerRender;
+      const { SoundEngine } = window.BreakerSound || {};
       const { STAGES } = window.BreakerStages || { STAGES: {} };
       const NORMAL_STAGES = window.BreakerNormalStages || {};
 
@@ -271,7 +300,10 @@
       const canvas = document.getElementById("gameCanvas");
       const screenWrap = document.getElementById("screenWrap");
       const renderer = new Renderer(canvas, { viewHeight: 240 });
+      const soundEngine = typeof SoundEngine === "function" ? new SoundEngine() : null;
+
       const stageBadge = document.getElementById("stageBadge");
+      const soundBtn = document.getElementById("soundBtn");
       const battleBtn = document.getElementById("battleBtn");
       const devToggleBtn = document.getElementById("devToggleBtn");
       const devPanel = document.getElementById("devPanel");
@@ -279,6 +311,8 @@
       const stageSelect = document.getElementById("stageSelect");
       const timedBombSecSelect = document.getElementById("timedBombSecSelect");
       const zoomSelect = document.getElementById("zoomSelect");
+      const walkSoundSelect = document.getElementById("walkSoundSelect");
+      const seTestRow = document.getElementById("seTestRow");
       const resetBtn = document.getElementById("resetBtn");
       const pauseBtn = document.getElementById("pauseBtn");
       const stepBtn = document.getElementById("stepBtn");
@@ -295,6 +329,27 @@
       let activeEntries = [];
       let lastNonBattleMode = "normal";
       let resultHammerWaitPrev = false;
+
+      function unlockAudio() {
+        if (soundEngine) {
+          soundEngine.unlock();
+        }
+      }
+
+      window.addEventListener("pointerdown", unlockAudio, { capture: true, passive: true });
+      window.addEventListener("touchstart", unlockAudio, { capture: true, passive: true });
+      window.addEventListener("keydown", unlockAudio, { capture: true });
+
+      function updateSoundButtonUI() {
+        if (!soundEngine) {
+          soundBtn.disabled = true;
+          soundBtn.textContent = "音なし";
+          return;
+        }
+        const muted = soundEngine.isMuted();
+        soundBtn.textContent = muted ? "音OFF" : "音ON";
+        soundBtn.classList.toggle("sound-muted", muted);
+      }
 
       function getNormalEntries() {
         const list = [];
@@ -426,7 +481,8 @@
             hunter: cfg.hunter,
             enemies: cfg.enemies,
             orb: false,
-            isBattleMode: true
+            isBattleMode: true,
+            soundEngine
           });
         } else {
           const selected = activeEntries.find(e => e.key === stageSelect.value) || activeEntries[0];
@@ -447,7 +503,8 @@
             hunter: cfg.hunter,
             enemies: cfg.enemies,
             orb: cfg.orb,
-            orbFast: cfg.orbFast
+            orbFast: cfg.orbFast,
+            soundEngine
           });
         }
 
@@ -644,6 +701,7 @@
 
       stickBase.addEventListener("pointerdown", function (e) {
         e.preventDefault();
+        unlockAudio();
         activePointerId = e.pointerId;
         if (stickBase.setPointerCapture) {
           try { stickBase.setPointerCapture(e.pointerId); } catch (_) {}
@@ -673,6 +731,7 @@
 
       hammerBtn.addEventListener("pointerdown", function (e) {
         e.preventDefault();
+        unlockAudio();
         hammerPointerId = e.pointerId;
         if (hammerBtn.setPointerCapture) {
           try { hammerBtn.setPointerCapture(e.pointerId); } catch (_) {}
@@ -713,6 +772,7 @@
       window.addEventListener("keydown", function (e) {
         if (KEY_MAP[e.code]) {
           e.preventDefault();
+          unlockAudio();
           pressedKeys.add(e.code);
           recomputeKeys();
         }
@@ -733,6 +793,38 @@
         setHammerPressed(false);
       });
 
+      soundBtn.addEventListener("click", function () {
+        unlockAudio();
+        if (soundEngine) {
+          soundEngine.setMuted(!soundEngine.isMuted());
+          updateSoundButtonUI();
+        }
+        soundBtn.blur();
+      });
+
+      if (walkSoundSelect) {
+        walkSoundSelect.addEventListener("change", function () {
+          unlockAudio();
+          if (soundEngine) {
+            soundEngine.setWalkStyle(walkSoundSelect.value);
+            if (walkSoundSelect.value !== "off") {
+              soundEngine.play("walk");
+            }
+          }
+          walkSoundSelect.blur();
+        });
+      }
+
+      if (seTestRow) {
+        seTestRow.addEventListener("click", function (e) {
+          const btn = e.target.closest("button[data-se]");
+          if (!btn || !soundEngine) return;
+          unlockAudio();
+          soundEngine.play(btn.getAttribute("data-se"));
+          btn.blur();
+        });
+      }
+
       devToggleBtn.addEventListener("click", function () {
         const isOpen = devPanel.classList.toggle("hidden") === false;
         devToggleBtn.classList.toggle("active", isOpen);
@@ -741,6 +833,7 @@
       });
 
       battleBtn.addEventListener("click", function () {
+        unlockAudio();
         if (modeSelect.value === "battle") {
           modeSelect.value = lastNonBattleMode || "test";
         } else {
@@ -770,6 +863,7 @@
         zoomSelect.blur();
       });
       resetBtn.addEventListener("click", function () {
+        unlockAudio();
         createStage();
         resetBtn.blur();
       });
@@ -816,6 +910,7 @@
         requestAnimationFrame(loop);
       }
 
+      updateSoundButtonUI();
       rebuildStageSelect();
       createStage();
       requestAnimationFrame(loop);
