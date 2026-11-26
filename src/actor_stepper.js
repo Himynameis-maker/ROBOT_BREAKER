@@ -1,4 +1,4 @@
- (function (root) {
+(function (root) {
   "use strict";
 
   const G = (typeof module !== "undefined" && module.exports && !root.BreakerGame)
@@ -306,6 +306,11 @@
       if (slot.row >= world.rows - 1) return false;
       if (slot.flag & 2) {
         if (isSolidDrum(world.getTile(slot.row + 1, slot.col))) return false;
+        const curT = world.getTile(slot.row, slot.col);
+        const isContLad = this.isContinuousLadderSegment(slot.row, slot.col, world);
+        if (!isFallHoleTile(curT) && !isContLad) {
+          return false;
+        }
       } else {
         const curTile = world.getTile(slot.row, slot.col);
         const isSandCont = slot.isPlayer &&
@@ -373,6 +378,7 @@
 
     // 横飛び遷移 (State 8 / State 9)
     trySideTransition(slot, b, world) {
+      if (slot.flag & 2) return false;
       this.updateCR(slot, world);
       const horiz = b & (LEFT | RIGHT);
       if (horiz === 0) return false;
@@ -449,6 +455,7 @@
     }
 
     tryEnterLadder(slot, b, world) {
+      if (slot.flag & 2) return false;
       const curTile = world.getTile(slot.row, slot.col);
       if (isHoleTile(curTile)) return false;
 
