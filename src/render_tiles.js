@@ -461,6 +461,49 @@
     "................"
   ];
 
+  // 近未来SFドラム缶（16×21、yTop+11..31に配置し天板上のキャラとめり込みゼロ）
+  const SF_DRUM_PALETTE = {
+    K: "#161a24", // 外枠・底枠
+    I: "#212838", // ディープガンメタ影
+    G: "#343f54", // ダークガンメタ
+    M: "#566885", // ミッドスチール
+    S: "#8ca2bf", // ライトスチール
+    L: "#cde0f8", // 天板・縁の明銀ハイライト
+    C: "#38e4ff", // SFステータスシアンLED
+    W: "#b8f8ff", // LEDハイライト芯
+    T: "#1a6c82", // 暗シアンインジケータ
+    O: "#320a0e", // 最暗赤影・溝
+    D: "#5e1216", // 胴体ディープシャドウレッド
+    B: "#881d1f", // 胴体暗クリムゾン
+    R: "#c9322a", // 胴体メインSFレッド
+    H: "#ee5e44", // 胴体ハイライトスカーレット
+    P: "#ffa484"  // 円筒縦ツヤハイライト
+  };
+
+  const SF_DRUM_PATTERN = [
+    ".GMSSLLLLLLSSMG.", // dy=0  (yTop+11): 天板トップ（キャラ足底yTop+10と接する）
+    ".KSMLLMMGWCGGIK.", // dy=1  (yTop+12): 天板キャップ側面＋ロックランプ
+    ".KGMSSMMMMGGGIK.", // dy=2  (yTop+13): 上部ガンメタ締付リム
+    ".KODBBBRRRRBBOK.", // dy=3  (yTop+14): 胴体トップ影
+    ".KBRHPHRRRBBDOK.", // dy=4  (yTop+15): 上段SF赤円筒
+    ".KBRHPHRRRBBDOK.", // dy=5  (yTop+16)
+    ".KBRHPHRRRBBDOK.", // dy=6  (yTop+17)
+    ".KMSLLMMMMGGGIK.", // dy=7  (yTop+18): 上強化スチールフープ
+    ".KOOOOOOOOOOOOK.", // dy=8  (yTop+19): 上フープ下溝
+    ".KBRHPHRRRBBDOK.", // dy=9  (yTop+20): 中段SF赤円筒
+    ".KBRHPHRRRKCKOK.", // dy=10 (yTop+21): 極小エネルギーインジケータ（明）
+    ".KBRHPHRRRKTKOK.", // dy=11 (yTop+22): 極小エネルギーインジケータ（暗）
+    ".KBRHPHRRRBBDOK.", // dy=12 (yTop+23)
+    ".KMSLLMMMMGGGIK.", // dy=13 (yTop+24): 下強化スチールフープ
+    ".KOOOOOOOOOOOOK.", // dy=14 (yTop+25): 下フープ下溝
+    ".KBRHPHRRRBBDOK.", // dy=15 (yTop+26): 下段SF赤円筒
+    ".KBRHPHRRRBBDOK.", // dy=16 (yTop+27)
+    ".KBRHPHRRRBBDOK.", // dy=17 (yTop+28)
+    ".KODBBBRRRRBBOK.", // dy=18 (yTop+29): 胴体ボトム影
+    ".KMSLLMMMMGGGIK.", // dy=19 (yTop+30): 下部衝撃吸収ベースリム
+    ".KKKKKKKKKKKKKK."  // dy=20 (yTop+31): 接地底枠
+  ];
+
   function getTrappedActorKind(actor) {
     if (!actor) return null;
     if (actor.isPlayer) return "player";
@@ -524,18 +567,18 @@
         }
       }
 
-      // 2. 顔ペイントにだけドラム缶の補強リブ凹凸と左右円筒カーブ陰影を馴染ませる
+      // 2. 顔ペイントにだけドラム缶の強化フープ凹凸と左右円筒カーブ陰影を馴染ませる
       g.save();
       g.globalCompositeOperation = "source-atop";
-      g.fillStyle = "rgba(255, 224, 150, 0.16)";
+      g.fillStyle = "rgba(210, 232, 255, 0.18)";
       g.fillRect(0, 6, 16, 1);
-      g.fillRect(0, 14, 16, 1);
-      g.fillStyle = "rgba(24, 8, 6, 0.34)";
+      g.fillRect(0, 12, 16, 1);
+      g.fillStyle = "rgba(18, 10, 16, 0.38)";
       g.fillRect(0, 7, 16, 1);
-      g.fillRect(0, 15, 16, 1);
-      g.fillStyle = "rgba(20, 6, 6, 0.20)";
+      g.fillRect(0, 13, 16, 1);
+      g.fillStyle = "rgba(16, 8, 12, 0.22)";
       g.fillRect(1, 0, 2, 21);
-      g.fillRect(12, 0, 3, 21);
+      g.fillRect(13, 0, 2, 21);
       g.restore();
 
       // 3. 汚れた手書き風赤い❌マークを重ねる
@@ -1230,35 +1273,18 @@
     },
 
     drawDrum(ctx, x, yTop, trappedActor) {
-      // 天板（yTop+6..+11）+ 円筒胴体（yTop+11..+32）：天板に乗った時の足元 yTop+11 と一致
-      ctx.fillStyle = "#6c1c18";
-      ctx.fillRect(x + 1, yTop + 6, 14, 5);
-      ctx.fillStyle = "#c84838";
-      ctx.fillRect(x + 2, yTop + 7, 12, 3);
-      ctx.fillStyle = "#ee8868";
-      ctx.fillRect(x + 3, yTop + 7, 6, 1);
+      if (!this.sfDrumSprite) {
+        this.sfDrumSprite = bakeRectPattern(SF_DRUM_PATTERN, SF_DRUM_PALETTE, 16, 21);
+      }
+      // 天板上端 yTop+11 〜 底 yTop+31：天板上のキャラ足底 yTop+10 とめり込みゼロで接地
+      ctx.drawImage(this.sfDrumSprite, x, yTop + 11);
 
-      ctx.fillStyle = "#982820";
-      ctx.fillRect(x + 1, yTop + 11, 14, 21);
-      ctx.fillStyle = "#d04434";
-      ctx.fillRect(x + 3, yTop + 11, 8, 21);
-      ctx.fillStyle = "#f07c64";
-      ctx.fillRect(x + 4, yTop + 11, 2, 21);
-
-      // ドラム缶の補強リブ2本
-      ctx.fillStyle = "#4c1410";
-      ctx.fillRect(x + 1, yTop + 17, 14, 2);
-      ctx.fillRect(x + 1, yTop + 25, 14, 2);
-      ctx.fillStyle = "#e8a858";
-      ctx.fillRect(x + 3, yTop + 17, 8, 1);
-      ctx.fillRect(x + 3, yTop + 25, 8, 1);
-
-      // 閉じ込められたキャラの顔＋汚れた手書き風赤い❌（ドラムの丸みに沿って歪曲）
+      // 閉じ込められたキャラの顔＋汚れた手書き風赤い❌（SFドラム缶胴体 yTop+14..28 に馴染ませる）
       if (trappedActor) {
         const kind = getTrappedActorKind(trappedActor);
         const overlay = this.getTrappedDrumSprite(kind);
         if (overlay) {
-          ctx.drawImage(overlay, x, yTop + 11);
+          ctx.drawImage(overlay, 0, 2, 16, 15, x, yTop + 14, 16, 15);
         }
       }
     },
