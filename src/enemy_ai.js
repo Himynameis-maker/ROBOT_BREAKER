@@ -16,12 +16,18 @@
     isLadderTile,
     isCrumblingLadderTile,
     isDoorOpeningTile,
+    isSameLadderType,
     isHoleTile,
     isFallHoleTile,
     isSolidDrum,
     FALL_TABLE,
     KNOCKDOWN_DY
   } = G;
+
+  const isSameLadder = isSameLadderType || ((a, b) =>
+    (a === TILE.LADDER && b === TILE.LADDER) ||
+    (a === TILE.BREAK_LADDER && b === TILE.BREAK_LADDER) ||
+    (a === TILE.SAND_LADDER && b === TILE.SAND_LADDER));
 
   // ザコ敵初期速度ビットマスク（ドローン通常: 0x25 = 3/8速, ドローン高速: 0x55 = 4/8速, クローラー: 0x77 = 6/8速）
   const DRONE_DEFAULT_SPEED = 0x25;
@@ -364,44 +370,55 @@
       }
     }
 
-    // 進行方向隣セルがドラム缶（または頭上歩行不可）なら反転
+    canWalkFromCellTo(slot, world, targetCol) {
+      const nextTile = world.getTile(slot.row, targetCol);
+      if ((slot.flag & 2) === 0) {
+        return nextTile !== TILE.DRUM;
+      }
+      // ドラム缶頭上歩行時: 隣が「穴」または「同種連続ハシゴ」のみ通行可（1つ上の足場へは届かない）
+      if (isLadderTile(nextTile)) {
+        if (slot.row >= world.rows - 1) return false;
+        const nextBelow = world.getTile(slot.row + 1, targetCol);
+        return isSameLadder(nextTile, nextBelow);
+      }
+      return isHoleTile(nextTile);
+    }
+
+    // 進行方向隣セルがドラム缶（または頭上歩行不可）なら反転（両側不可時は true = 閉じ込め待機）
     checkDrumBlock(slot, world) {
       const horiz = slot.cmd & (RIGHT | LEFT);
-      if (horiz === 0) return;
+      if (horiz === 0) return false;
 
       const xMod = slot.x & 0x0f;
       let nextCol = slot.col;
       if (horiz & RIGHT) {
-        if (xMod >= 5) return;
+        if (xMod >= 5) return false;
         nextCol = world.wrapCol(slot.col + 1);
       } else {
-        if (xMod < 11) return;
+        if (xMod < 11) return false;
         nextCol = world.wrapCol(slot.col - 1);
       }
 
-      if ((slot.flag & 2) === 0) {
-        if (world.getTile(slot.row, nextCol) === TILE.DRUM) {
-          this.reverseHoriz(slot);
-        }
-        return;
+      if (slot.flag & 2) {
+        slot.prom = 0x2e;
       }
 
-      // ドラム缶頭上歩行時: 隣が穴か「下の段が空のはしご」以外は反転
-      slot.prom = 0x2e;
-      const nextTile = world.getTile(slot.row, nextCol);
-      if (isLadderTile(nextTile)) {
-        const nextBelow = slot.row < world.rows - 1 ? world.getTile(slot.row + 1, nextCol) : TILE.EMPTY;
-        if (nextBelow === TILE.EMPTY) return;
-        this.reverseHoriz(slot);
-        return;
-      }
-      if (!isHoleTile(nextTile)) {
+      if (!this.canWalkFromCellTo(slot, world, nextCol)) {
+        const oppCol = world.wrapCol(slot.col + ((horiz & RIGHT) ? -1 : 1));
+        if (!this.canWalkFromCellTo(slot, world, oppCol)) {
+          return true;
+        }
         this.reverseHoriz(slot);
       }
+      return false;
     }
 
     // はしごマス中央踏破時の進入判定
     tryEnemyLadder(slot, world) {
+      if (slot.flag & 2) {
+        slot.avail = 0;
+        return false;
+      }
       const curTile = world.getTile(slot.row, slot.col);
       if (isFallHoleTile(curTile)) {
         slot.avail = 0;
@@ -459,6 +476,7 @@
       slot.dir = vert;
       slot.ladderStage = 0;
       slot.isLadderPose = true;
+      slot.bumpTrigger = false;
       return true;
     }
 
@@ -488,16 +506,21 @@
       return true;
     }
 
-    // 穴への落下開始
+    // 穴への落下開始（ドラム缶頭上時は穴だけでなく連続ハシゴからも掴めず落下）
     tryEnterHole(slot, world) {
       if (slot.row >= world.rows - 1) return false;
       if (slot.flag & 2) {
         if (isSolidDrum(world.getTile(slot.row + 1, slot.col))) return false;
+        const curT = world.getTile(slot.row, slot.col);
+        const isContLad = isLadderTile(curT) &&
+          isSameLadder(curT, world.getTile(slot.row + 1, slot.col));
+        if (!isFallHoleTile(curT) && !isContLad) return false;
       } else {
         if (!isFallHoleTile(world.getTile(slot.row, slot.col))) return false;
       }
       if (((slot.x + 3) & 0x0f) >= 6) return false;
 
+      this.snapX(slot, world);
       slot.prom = 0x12;
       slot.topY = slot.y;
       slot.state = 5;
@@ -505,25 +528,54 @@
       return true;
     }
 
-    // 敵同士接触時、16Fに1回だけ1回分の移動を相殺して素通り
+    // 敵同士接触時: すれ違い(反対向き)の時のみ16Fに1回、1回分の移動を相殺して素通り
     handleBump(slot, world) {
       if (slot.bumpCooldown > 0) {
-        slot.bumpCooldown -= 1;
         slot.bumpTrigger = false;
-        return;
+        return false;
       }
-      if (!slot.bumpTrigger) return;
-
-      slot.bumpCooldown = 0x10;
+      if (!slot.bumpTrigger) return false;
       slot.bumpTrigger = false;
+
       if (slot.state === 1) {
-        const horiz = slot.cmd & (RIGHT | LEFT);
-        if (horiz === RIGHT) {
-          slot.x = world.wrapX(slot.x - 1);
-        } else if (horiz === LEFT) {
-          slot.x = world.wrapX(slot.x + 1);
+        const myHoriz = slot.cmd & (RIGHT | LEFT);
+        if (myHoriz === 0) return false;
+
+        let hasOpposite = false;
+        if (world.enemies && world.enemies.length > 1) {
+          const halfW = world.worldWidth / 2;
+          for (let i = 0; i < world.enemies.length; i++) {
+            const other = world.enemies[i];
+            if (other === slot) continue;
+            if (!!other.isBack !== !!slot.isBack) continue;
+            if (other.state !== 1 && other.state !== 0) continue;
+
+            let dx = slot.x - other.x;
+            if (dx >= halfW) dx -= world.worldWidth;
+            if (dx < -halfW) dx += world.worldWidth;
+            const absDx = dx >= 0 ? dx : (-dx - 1);
+            if (absDx >= 8) continue;
+
+            const dy = slot.y - other.y;
+            const absDy = dy >= 0 ? dy : (-dy - 1);
+            if (absDy >= 8) continue;
+
+            const otherHoriz = (other.facing || other.dir) & (RIGHT | LEFT);
+            if (otherHoriz !== 0 && otherHoriz !== myHoriz) {
+              hasOpposite = true;
+              break;
+            }
+          }
         }
-      } else if (slot.state === 2) {
+        if (!hasOpposite) return false;
+
+        slot.bumpCooldown = 0x10;
+        return true;
+      }
+
+      if (slot.state === 2) {
+        if (slot.prom <= 1 || slot.prom >= 47) return false;
+        slot.bumpCooldown = 0x10;
         const vert = slot.cmd & (UP | DOWN);
         if (vert === UP) {
           slot.prom = Math.max(0, slot.prom - 1);
@@ -531,6 +583,7 @@
           slot.prom = Math.min(48, slot.prom + 1);
         }
       }
+      return false;
     }
 
     resumeWalkFromIdle(slot, world, runThink, stopIfNoHoriz = false) {
@@ -551,11 +604,15 @@
       if ((slot.flag & 2) === 0) {
         this.snapY(slot);
       }
-      this.checkDrumBlock(slot, world);
+      const isWallTrapped = this.checkDrumBlock(slot, world);
       const afterHoriz = slot.cmd & (RIGHT | LEFT);
       slot.dir = afterHoriz;
       slot.facing = afterHoriz;
-      slot.x = world.wrapX(slot.x + (afterHoriz === LEFT ? -1 : 1));
+      if (isWallTrapped) {
+        this.snapX(slot, world);
+      } else {
+        slot.x = world.wrapX(slot.x + (afterHoriz === LEFT ? -1 : 1));
+      }
       slot.prevCmd = slot.cmd;
       slot.state = 1;
       slot.isLadderPose = false;
@@ -580,11 +637,10 @@
       if (!this.rotateSpeedMask(slot)) return;
       slot.isLadderPose = false;
       slot.prevCmd = slot.cmd;
-      this.checkDrumBlock(slot, world);
+      const isWallTrapped = this.checkDrumBlock(slot, world);
       if (this.tryEnterDoor(slot, world)) return;
       if (this.tryEnemyLadder(slot, world)) return;
       if (this.tryEnterHole(slot, world)) return;
-      this.handleBump(slot, world);
 
       const prevDir = slot.prevCmd & (RIGHT | LEFT);
       const curDir = slot.cmd & (RIGHT | LEFT);
@@ -592,7 +648,20 @@
         slot.cmd = (slot.cmd & ~(RIGHT | LEFT)) | (slot.facing || LEFT);
       }
       if (prevDir !== (slot.cmd & (RIGHT | LEFT))) {
+        if (isWallTrapped) {
+          this.snapX(slot, world);
+          this.updateCR(slot, world);
+          return;
+        }
         this.resumeWalkFromIdle(slot, world, false);
+        return;
+      }
+      if (isWallTrapped) {
+        this.snapX(slot, world);
+        this.updateCR(slot, world);
+        return;
+      }
+      if (this.handleBump(slot, world)) {
         return;
       }
 
@@ -800,6 +869,10 @@
     }
 
     stepEnemy(slot, world) {
+      if (slot.bumpCooldown > 0) {
+        slot.bumpCooldown -= 1;
+        slot.bumpTrigger = false;
+      }
       if (slot.state === 3) {
         this.stepState3(slot, world);
         return;
