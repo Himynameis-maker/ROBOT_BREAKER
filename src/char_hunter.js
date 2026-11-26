@@ -11,6 +11,10 @@
     SAND_LADDER: 0x02,
     BREAK_LADDER: 0xd1
   };
+  const isLadderTile = G.isLadderTile || (t =>
+    t === TILE.LADDER || t === TILE.BREAK_LADDER || t === TILE.SAND_LADDER);
+  const isCrumblingLadderTile = G.isCrumblingLadderTile || (t => t >= 0x51 && t <= 0x55);
+  const isSolidDrum = G.isSolidDrum || (t => t === (TILE.DRUM !== undefined ? TILE.DRUM : 0x08));
   const isSameLadderType = G.isSameLadderType || ((a, b) =>
     (a === TILE.LADDER && b === TILE.LADDER) ||
     (a === TILE.BREAK_LADDER && b === TILE.BREAK_LADDER) ||
@@ -486,7 +490,7 @@
     },
 
     // 追尾ロボのはしご移動（enter_top 9F 等）に合わせた均等間隔ステップ補正
-    getHunterLadderVisual(slot) {
+    getHunterLadderVisual(slot, world) {
       const s = slot.state;
       const y = slot.y;
       const topY = slot.topY;
@@ -559,6 +563,21 @@
           vy = topY + 7;
         } else {
           vy = y;
+        }
+      }
+
+      // ハシゴの真上にドラム缶がある場合は、頭半分ほど鉄骨にかかる位置（topY + 27）で頭がつっかえて止まる見た目にする
+      if (world && topY >= 32 && (topY & 0x1f) === 0) {
+        const aboveRow = Math.floor(topY / 32) - 1;
+        const ladRow = aboveRow + 1;
+        if (aboveRow >= 0 && ladRow < world.rows) {
+          const aboveTile = world.getTile(aboveRow, slot.col);
+          const ladTile = world.getTile(ladRow, slot.col);
+          if (isSolidDrum(aboveTile) && (isLadderTile(ladTile) || isCrumblingLadderTile(ladTile))) {
+            if (vy < topY + 27) {
+              vy = topY + 27;
+            }
+          }
         }
       }
 
@@ -893,7 +912,7 @@
       }
 
       if (slot.state === 2 || slot.state === 3 || slot.state === 6) {
-        const lad = this.getHunterLadderVisual(slot);
+        const lad = this.getHunterLadderVisual(slot, world);
         const drawY = lad.vy - 26;
         const img = sprites[lad.pose + "_R"];
         if (!img) return;
