@@ -27,46 +27,78 @@
       this.legacySilentPlayed = false;
       this.masterVolume = 0.45;
       this.walkStyle = "on";
+      this.walkAlt = 0;
 
       this.fcSfxBuffers = Object.create(null);
       this.fcSfxOptions = {
-        walk: { minGapMs: 65, volScale: 0.45 }
+        walkLow: { minGapMs: 65, volScale: 0.6 },
+        walkHigh: { minGapMs: 65, volScale: 0.6 }
       };
 
       // FC-SFX 1985 で作成した JSON レシピをここに追加していく
       this.fcSfxDefs = {
-        // 「完全ランダム #517」から低い方の音(505.5068Hz)を取り出し、ウェーブなしで短くした足音
-        // ※高い方の音にしたい場合は baseFreq と endFreq を 636.9006684770921 に変更
-        walk: {
-          id: "sfx_walk_from_517_low",
-          category: "random",
-          label: "足音（#517 低い方・短）",
-          duration: 0.05,
+        // 「カーソル / 選択 #722」ベース：三角波で柔らかめにし、低い音・高い音の2音を作成
+        walkLow: {
+          id: "sfx_walk_from_722_low",
+          category: "blip",
+          label: "足音・低（#722 柔らかめ）",
+          duration: 0.08170532557294849,
           loopable: false,
-          masterGain: 1.2322258666953205,
-          pitchSemi: 0,
-          speedScale: 1,
+          masterGain: 1,
+          pitchSemi: -10,
+          speedScale: 0.9,
           toneShift: 0,
-          gainScale: 1,
+          gainScale: 0.7,
           channels: [
             {
               type: "triangle",
               duty: 0.5,
-              noiseMode: "short",
               gain: 0.9,
-              baseFreq: 505.50680899831943,
-              endFreq: 505.50680899831943,
+              baseFreq: 1054.5900780774218,
+              endFreq: 1429.3560019829115,
               slideCurve: 1,
-              smoothSlide: false,
               vibratoDepth: 0,
               vibratoSpeed: 0,
               steps: null,
-              stepFrames: 1,
+              stepFrames: 2,
               stepLoop: false,
               stepSlidePerLoop: 1,
               attackFrames: 0,
-              sustainFrames: 0,
-              decayFrames: 3,
+              sustainFrames: 2,
+              decayFrames: 2,
+              quantize4bit: false,
+              delayFrames: 0
+            }
+          ]
+        },
+        walkHigh: {
+          id: "sfx_walk_from_722_high",
+          category: "blip",
+          label: "足音・高（#722 柔らかめ）",
+          duration: 0.08170532557294849,
+          loopable: false,
+          masterGain: 1,
+          pitchSemi: -6,
+          speedScale: 0.9,
+          toneShift: 0,
+          gainScale: 0.7,
+          channels: [
+            {
+              type: "triangle",
+              duty: 0.5,
+              gain: 0.9,
+              baseFreq: 1054.5900780774218,
+              endFreq: 1429.3560019829115,
+              slideCurve: 1,
+              vibratoDepth: 0,
+              vibratoSpeed: 0,
+              steps: null,
+              stepFrames: 2,
+              stepLoop: false,
+              stepSlidePerLoop: 1,
+              attackFrames: 0,
+              sustainFrames: 2,
+              decayFrames: 2,
               quantize4bit: false,
               delayFrames: 0
             }
@@ -932,7 +964,15 @@
       const ctx = this.ctx;
       if (this.muted || !ctx || ctx.state !== "running") return;
 
-      if (name === "walk" && this.walkStyle === "off") return;
+      if (name === "walk") {
+        if (this.walkStyle === "off") return;
+        if (!this.canTrigger("walk", 65)) return;
+        const key = ((this.walkAlt++) & 1) === 0 ? "walkLow" : "walkHigh";
+        const meta = this.fcSfxOptions[key] || {};
+        const vol = opt.volScale != null ? opt.volScale : (meta.volScale != null ? meta.volScale : 0.6);
+        this.playFcSfx(key, vol);
+        return;
+      }
 
       if (this.fcSfxDefs[name]) {
         const meta = this.fcSfxOptions[name] || {};
