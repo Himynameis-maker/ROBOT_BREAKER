@@ -1,6 +1,10 @@
 (function (root) {
   "use strict";
 
+  // 無音1フレームWAV（navigator.audioSession 非対応の古いiOS向けフォールバック用）
+  const SILENT_WAV_DATA_URI =
+    "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+
   // 1985年ファミコン（2A03 APU）準拠 Web Audio ＋ jsfxr JSON対応 サウンドエンジン
   class SoundEngine {
     constructor() {
@@ -8,6 +12,7 @@
       this.masterGain = null;
       this.muted = false;
       this.unlocked = false;
+      this.legacySilentPlayed = false;
       this.masterVolume = 0.45;
       this.walkStyle = "mario83"; // "mario83" | "mario83_low" | "retro_step" | "off"
       this.walkAlt = 0;
@@ -50,11 +55,63 @@
           sample_size: 8
         }
       };
+
       this.lastPlayTime = Object.create(null);
+      this.resumePromise = null;
+      this.interruptedSince = 0;
+      this.resumeFailCount = 0;
+      this.pendingQueue = [];
+      this.lastKickAt = 0;
+      this.onStateChangeCallback = null;
+
+      this.ensurePlaybackSession();
+    }
+
+    nowMs() {
+      return (root.performance && typeof root.performance.now === "function")
+        ? root.performance.now()
+        : Date.now();
+    }
+
+    // AudioContext生成「前」に audioSession.type を playback に設定（iOS マナーモード貫通・安定化）
+    ensurePlaybackSession() {
+      const nav = root.navigator;
+      if (nav && nav.audioSession && "type" in nav.audioSession) {
+        try {
+          if (nav.audioSession.type !== "playback") {
+            nav.audioSession.type = "playback";
+          }
+        } catch (_) {}
+      }
+    }
+
+    getSessionType() {
+      const nav = root.navigator;
+      if (nav && nav.audioSession && nav.audioSession.type) {
+        return nav.audioSession.type;
+      }
+      return "none";
+    }
+
+    getDebugState() {
+      const ctxState = this.ctx ? this.ctx.state : "uninit";
+      return "SND:" + ctxState + " ses:" + this.getSessionType() + (this.muted ? " [MUTE]" : " [ON]");
+    }
+
+    notifyStateChange() {
+      if (typeof this.onStateChangeCallback === "function") {
+        try {
+          this.onStateChangeCallback();
+        } catch (_) {}
+      }
     }
 
     ensureContext() {
-      if (this.ctx) return this.ctx;
+      this.ensurePlaybackSession();
+      if (this.ctx && this.ctx.state !== "closed") {
+        return this.ctx;
+      }
+
       const AC = root.AudioContext || root.webkitAudioContext;
       if (!AC) return null;
 
@@ -64,6 +121,32 @@
         this.masterGain.gain.value = this.muted ? 0 : this.masterVolume;
         this.masterGain.connect(this.ctx.destination);
         this.initWaveTables();
+
+        const handleStateChange = () => {
+          if (!this.ctx) return;
+          if (this.ctx.state === "running") {
+            this.interruptedSince = 0;
+            this.resumeFailCount = 0;
+            this.unlocked = true;
+            this.applyMasterGain();
+            this.flushPendingQueue();
+          } else {
+            if (!this.interruptedSince) {
+              this.interruptedSince = this.nowMs();
+            }
+          }
+          this.notifyStateChange();
+        };
+
+        if (typeof this.ctx.addEventListener === "function") {
+          this.ctx.addEventListener("statechange", handleStateChange);
+        } else {
+          this.ctx.onstatechange = handleStateChange;
+        }
+
+        if (this.ctx.state !== "running") {
+          this.interruptedSince = this.nowMs();
+        }
       } catch (_) {
         this.ctx = null;
         this.masterGain = null;
@@ -71,35 +154,172 @@
       return this.ctx;
     }
 
-    // iPhone Safari / モバイルブラウザ用のユーザー操作時サウンド解禁
-    unlock() {
+    recoverContext() {
+      if (this.ctx) {
+        try {
+          if (this.ctx.state !== "closed" && typeof this.ctx.close === "function") {
+            this.ctx.close();
+          }
+        } catch (_) {}
+      }
+      this.ctx = null;
+      this.masterGain = null;
+      this.pulseWaves = {};
+      this.triWave = null;
+      this.noiseLongBuf = null;
+      this.noiseShortBuf = null;
+      this.sfxrBuffers = Object.create(null);
+      this.unlocked = false;
+      this.resumePromise = null;
+      this.interruptedSince = 0;
+      this.resumeFailCount = 0;
+      return this.ensureContext();
+    }
+
+    applyMasterGain() {
+      if (!this.masterGain || !this.ctx) return;
+      const g = this.masterGain.gain;
+      const target = this.muted ? 0 : this.masterVolume;
+      try {
+        if (typeof g.cancelScheduledValues === "function") {
+          g.cancelScheduledValues(0);
+        }
+        g.value = target;
+        g.setValueAtTime(target, this.ctx.currentTime);
+      } catch (_) {
+        try {
+          g.value = target;
+        } catch (_) {}
+      }
+    }
+
+    kickSilentBuffer(ctx) {
+      if (!ctx || !this.masterGain || ctx.state === "closed") return;
+      const now = this.nowMs();
+      if (this.unlocked && now - this.lastKickAt < 180) return;
+      this.lastKickAt = now;
+      try {
+        const buf = ctx.createBuffer(1, 1, 22050);
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(this.masterGain);
+        src.start(0);
+      } catch (_) {}
+    }
+
+    playLegacySilentFallback() {
+      if (this.legacySilentPlayed) return;
+      if (this.getSessionType() !== "none") return;
+      if (typeof root.Audio !== "function") return;
+      this.legacySilentPlayed = true;
+      try {
+        const a = new root.Audio(SILENT_WAV_DATA_URI);
+        a.setAttribute("playsinline", "");
+        a.volume = 0.01;
+        const p = a.play();
+        if (p && typeof p.catch === "function") {
+          p.catch(() => {});
+        }
+      } catch (_) {}
+    }
+
+    tryResume() {
       const ctx = this.ensureContext();
+      if (!ctx) return null;
+      if (ctx.state === "running") {
+        this.interruptedSince = 0;
+        this.resumeFailCount = 0;
+        this.unlocked = true;
+        this.applyMasterGain();
+        this.flushPendingQueue();
+        return Promise.resolve();
+      }
+      if (this.resumePromise) {
+        return this.resumePromise;
+      }
+      if (typeof ctx.resume !== "function") {
+        return null;
+      }
+
+      try {
+        const p = ctx.resume();
+        if (p && typeof p.then === "function") {
+          this.resumePromise = p.then(() => {
+            this.resumePromise = null;
+            if (this.ctx && this.ctx.state === "running") {
+              this.interruptedSince = 0;
+              this.resumeFailCount = 0;
+              this.unlocked = true;
+              this.applyMasterGain();
+              this.flushPendingQueue();
+            } else {
+              this.resumeFailCount += 1;
+            }
+            this.notifyStateChange();
+          }).catch(() => {
+            this.resumePromise = null;
+            this.resumeFailCount += 1;
+            this.notifyStateChange();
+          });
+          return this.resumePromise;
+        }
+      } catch (_) {
+        this.resumePromise = null;
+        this.resumeFailCount += 1;
+      }
+      return null;
+    }
+
+    // iPhone Safari / モバイルブラウザ用のユーザー操作時サウンド解禁＆割り込み復帰
+    unlock() {
+      this.ensurePlaybackSession();
+      this.playLegacySilentFallback();
+
+      let ctx = this.ensureContext();
       if (!ctx) return false;
-      if (ctx.state === "suspended" && typeof ctx.resume === "function") {
-        try {
-          ctx.resume();
-        } catch (_) {}
-      }
-      if (!this.unlocked) {
-        try {
-          const buf = ctx.createBuffer(1, 1, 22050);
-          const src = ctx.createBufferSource();
-          src.buffer = buf;
-          src.connect(this.masterGain);
-          src.start(0);
+
+      if (ctx.state !== "running") {
+        const stalledMs = this.interruptedSince ? (this.nowMs() - this.interruptedSince) : 0;
+        if (this.resumeFailCount >= 2 && stalledMs > 600) {
+          ctx = this.recoverContext();
+          if (!ctx) return false;
+        }
+        this.kickSilentBuffer(ctx);
+        this.tryResume();
+      } else {
+        if (!this.unlocked) {
+          this.kickSilentBuffer(ctx);
           this.unlocked = true;
-        } catch (_) {}
+        }
+        this.applyMasterGain();
+        this.flushPendingQueue();
       }
+
+      this.notifyStateChange();
       return true;
+    }
+
+    // ページ復帰・フォアグラウンド戻り時に自動再接続
+    handleAppReturn() {
+      this.ensurePlaybackSession();
+      if (!this.ctx) return;
+      if (this.ctx.state !== "running") {
+        this.tryResume();
+      }
+      this.applyMasterGain();
+      this.notifyStateChange();
     }
 
     setMuted(muted) {
       this.muted = !!muted;
-      if (this.masterGain && this.ctx) {
-        this.masterGain.gain.setValueAtTime(
-          this.muted ? 0 : this.masterVolume,
-          this.ctx.currentTime
-        );
+      if (this.muted) {
+        this.pendingQueue.length = 0;
+      }
+      this.applyMasterGain();
+      if (!this.muted) {
+        this.unlock();
+      } else {
+        this.notifyStateChange();
       }
     }
 
@@ -115,7 +335,7 @@
     registerJsfxr(name, jsonParams) {
       if (!name || !jsonParams) return;
       this.sfxrDefs[name] = jsonParams;
-      if (this.ctx) {
+      if (this.ctx && this.ctx.state !== "closed") {
         this.sfxrBuffers[name] = this.renderJsfxrBuffer(jsonParams);
       }
     }
@@ -459,16 +679,13 @@
     }
 
     canTrigger(key, minGapMs) {
-      const now = (root.performance && typeof root.performance.now === "function")
-        ? root.performance.now()
-        : Date.now();
+      const now = this.nowMs();
       const prev = this.lastPlayTime[key] || 0;
       if (now - prev < minGapMs) return false;
       this.lastPlayTime[key] = now;
       return true;
     }
 
-    // 1チャンネル単音／周波数スイープ／段階ステップ再生
     playTone(opts) {
       const ctx = this.ctx;
       if (!ctx || this.muted || ctx.state !== "running") return;
@@ -530,7 +747,6 @@
       osc.stop(start + dur + 0.015);
     }
 
-    // 疑似ノイズ再生（打撃・破壊・爆発・ジェット炎）
     playNoise(opts) {
       const ctx = this.ctx;
       if (!ctx || this.muted || ctx.state !== "running") return;
@@ -589,11 +805,47 @@
       }
     }
 
-    // 効果音ディスパッチ
+    queuePendingSound(name, opt) {
+      if (name === "walk" || name === "ladder" || name === "shoeJet" || name === "bombWave") {
+        return;
+      }
+      const now = this.nowMs();
+      if (this.pendingQueue.length >= 4) {
+        this.pendingQueue.shift();
+      }
+      this.pendingQueue.push({ name, opt, at: now });
+    }
+
+    flushPendingQueue() {
+      if (this.muted || !this.ctx || this.ctx.state !== "running") return;
+      if (this.pendingQueue.length === 0) return;
+      const items = this.pendingQueue.splice(0, this.pendingQueue.length);
+      const now = this.nowMs();
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (now - item.at <= 220) {
+          this.playNow(item.name, item.opt || {});
+        }
+      }
+    }
+
     play(name, opt = {}) {
       if (this.muted) return;
       const ctx = this.ensureContext();
-      if (!ctx || ctx.state !== "running") return;
+      if (!ctx) return;
+
+      if (ctx.state !== "running") {
+        this.queuePendingSound(name, opt);
+        this.tryResume();
+        return;
+      }
+
+      this.playNow(name, opt);
+    }
+
+    playNow(name, opt = {}) {
+      const ctx = this.ctx;
+      if (this.muted || !ctx || ctx.state !== "running") return;
 
       const t = ctx.currentTime;
 
