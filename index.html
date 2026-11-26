@@ -53,6 +53,10 @@
       text-decoration: none;
       cursor: pointer;
       touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
     }
     button.active { background: #2f6fed; border-color: #5b90ff; }
     button.battle-active { background: #c93b2b; border-color: #ff7c6b; }
@@ -336,9 +340,22 @@
         }
       }
 
+      function handleAppAudioReturn() {
+        if (soundEngine && typeof soundEngine.handleAppReturn === "function") {
+          soundEngine.handleAppReturn();
+        }
+      }
+
       window.addEventListener("pointerdown", unlockAudio, { capture: true, passive: true });
       window.addEventListener("touchstart", unlockAudio, { capture: true, passive: true });
+      window.addEventListener("touchend", unlockAudio, { capture: true, passive: true });
+      window.addEventListener("click", unlockAudio, { capture: true, passive: true });
       window.addEventListener("keydown", unlockAudio, { capture: true });
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) handleAppAudioReturn();
+      });
+      window.addEventListener("pageshow", handleAppAudioReturn);
+      window.addEventListener("focus", handleAppAudioReturn);
 
       function updateSoundButtonUI() {
         if (!soundEngine) {
@@ -349,6 +366,10 @@
         const muted = soundEngine.isMuted();
         soundBtn.textContent = muted ? "音OFF" : "音ON";
         soundBtn.classList.toggle("sound-muted", muted);
+      }
+
+      if (soundEngine) {
+        soundEngine.onStateChangeCallback = updateSoundButtonUI;
       }
 
       function getNormalEntries() {
@@ -643,11 +664,13 @@
         const aiLine = h
           ? ("AI     bits:" + dirLabel(h.bits) + "(" + h.bits + ") dirMem:" + ai.lastPlayerDir + " timer:" + ai.timer)
           : "AI     OFF";
+        const sndLine = soundEngine ? soundEngine.getDebugState() : "SND:none";
         hudEl.textContent =
           "STAGE:" + world.stageNumber + " MAP:" + world.cols + "x" + world.rows + " F:" + world.f + " TGT:" + rem + " DR:" + doorOpen + "/" + doorTotal + " IN:" + dirLabel(inp) + (paused ? " [PAUSE]" : "") + introTag + clearTag + "\n" +
           "Player st:" + p.state + " X:" + p.x + " Y:" + Math.round(p.y) + " (" + p.row + "," + p.col + ") f:" + (p.facing & 2 ? "L" : "R") + actorTag(p) + playerHitLabel + "\n" +
           hunterLine + "\n" +
-          aiLine + " | " + orbLabel(world.orb, world);
+          aiLine + " | " + orbLabel(world.orb, world) + "\n" +
+          sndLine;
         if (world.battleManager) {
           const bm = world.battleManager;
           const lockTag = bm.hunterAI.lockedTarget
@@ -794,7 +817,6 @@
       });
 
       soundBtn.addEventListener("click", function () {
-        unlockAudio();
         if (soundEngine) {
           soundEngine.setMuted(!soundEngine.isMuted());
           updateSoundButtonUI();
