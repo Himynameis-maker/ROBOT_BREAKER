@@ -921,7 +921,7 @@
         return;
       }
 
-      if (slot.state === 0 && !walkVis.useWalk && world && slot.row < world.rows - 1) {
+      if (slot.state === 0 && !walkVis.useWalk && !(slot.flag & 2) && world && slot.row < world.rows - 1) {
         const curT = world.getTile(slot.row, slot.col);
         if (isSameLadderType(curT, world.getTile(slot.row + 1, slot.col))) {
           const img = sprites.climbHold_R;
