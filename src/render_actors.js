@@ -82,7 +82,7 @@
       if (slot.state === 4) {
         return "idle_" + facing;
       }
-      if (slot.state === 0 && world && slot.row < world.rows - 1) {
+      if (slot.state === 0 && !(slot.flag & 2) && world && slot.row < world.rows - 1) {
         const curT = world.getTile(slot.row, slot.col);
         if ((!slot.isPlayer || curT !== TILE.SAND_LADDER) &&
             isSameLadderType(curT, world.getTile(slot.row + 1, slot.col))) {
