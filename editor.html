@@ -17,6 +17,9 @@
       align-items: center;
       gap: 8px;
       overscroll-behavior: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
     }
     .hidden { display: none !important; }
     .container {
@@ -58,6 +61,10 @@
       text-decoration: none;
       cursor: pointer;
       touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
     }
     button:disabled {
       opacity: 0.45;
@@ -180,6 +187,9 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 0.74rem;
       resize: vertical;
+      user-select: text;
+      -webkit-user-select: text;
+      -webkit-touch-callout: default;
     }
     .controls-area {
       width: 100%;
@@ -189,60 +199,7 @@
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      padding: 4px 12px;
-    }
-    .stick-base {
-      position: relative;
-      width: 132px;
-      height: 132px;
-      border-radius: 50%;
-      background: radial-gradient(circle, #252c3b 0%, #191e29 72%);
-      border: 2px solid #44516e;
-      touch-action: none;
-      user-select: none;
-      -webkit-user-select: none;
-      flex-shrink: 0;
-    }
-    .stick-cross-h, .stick-cross-v {
-      position: absolute;
-      background: rgba(255, 255, 255, 0.08);
-      pointer-events: none;
-    }
-    .stick-cross-h { left: 16px; right: 16px; top: 50%; height: 2px; margin-top: -1px; }
-    .stick-cross-v { top: 16px; bottom: 16px; left: 50%; width: 2px; margin-left: -1px; }
-    .stick-knob {
-      position: absolute;
-      left: 50%;
-      top: 50%;
-      width: 54px;
-      height: 54px;
-      margin-left: -27px;
-      margin-top: -27px;
-      border-radius: 50%;
-      background: radial-gradient(circle at 35% 35%, #6a8cff, #2f57c8);
-      border: 2px solid #9ab4ff;
-      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
-      pointer-events: none;
-    }
-    .action-btn {
-      width: 88px;
-      height: 88px;
-      border-radius: 50%;
-      background: radial-gradient(circle at 35% 35%, #ff6b5b, #b8281c);
-      border: 3px solid #ffa498;
-      color: #fff;
-      font-weight: bold;
-      font-size: 0.85rem;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-      touch-action: none;
-      user-select: none;
-      -webkit-user-select: none;
-      flex-shrink: 0;
-      padding: 0;
-    }
-    .action-btn.pressed {
-      transform: scale(0.93);
-      background: radial-gradient(circle at 35% 35%, #ff9587, #d63527);
+      padding: 14px 12px 24px;
     }
     label.chk-label {
       display: inline-flex;
@@ -394,6 +351,7 @@
         </label>
       </div>
       <div class="row-left">
+        <button id="playPadConfigBtn" type="button">操作</button>
         <button id="playResetBtn" type="button">↺ やり直す</button>
         <button id="backToEditBtn" class="back-btn" type="button">✎ 編集に戻る</button>
       </div>
@@ -405,13 +363,13 @@
 
     <div id="playStatus" class="status-line" style="justify-content:center;"></div>
 
-    <div class="controls-area">
+    <div id="controlsArea" class="controls-area">
       <div id="stickBase" class="stick-base" aria-label="擬似スティック">
         <div class="stick-cross-h"></div>
         <div class="stick-cross-v"></div>
         <div id="stickKnob" class="stick-knob"></div>
       </div>
-      <button id="hammerBtn" class="action-btn" type="button" aria-label="ハンマー">HAMMER</button>
+      <button id="hammerBtn" class="action-btn" type="button" aria-label="ハンマー"></button>
     </div>
   </div>
 
@@ -437,6 +395,7 @@
   <script src="./data/stages_31_40.js"></script>
   <script src="./data/stages_41_50.js"></script>
   <script src="./src/stage_editor.js"></script>
+  <script src="./src/touch_controller.js"></script>
   <script>
     (function () {
       const { RIGHT, LEFT, DOWN, UP, HAMMER, GameWorld } = window.BreakerGame;
@@ -512,12 +471,10 @@
 
       const playTitle = document.getElementById("playTitle");
       const playIntroChk = document.getElementById("playIntroChk");
+      const playPadConfigBtn = document.getElementById("playPadConfigBtn");
       const playResetBtn = document.getElementById("playResetBtn");
       const backToEditBtn = document.getElementById("backToEditBtn");
       const playStatus = document.getElementById("playStatus");
-      const stickBase = document.getElementById("stickBase");
-      const stickKnob = document.getElementById("stickKnob");
-      const hammerBtn = document.getElementById("hammerBtn");
 
       let slots = E.loadSlotsFromStorage();
       let currentSlot = 0;
@@ -1121,13 +1078,20 @@
       // ================= テストプレイ制御 =================
       let playWorld = null;
       let playRafId = null;
-      let stickBits = 0;
       let keyBits = 0;
-      let hammerBtnDown = false;
       const pressedKeys = new Set();
 
+      const touchController = window.BreakerTouchController.create({
+        controlsArea: document.getElementById("controlsArea"),
+        stickBase: document.getElementById("stickBase"),
+        stickKnob: document.getElementById("stickKnob"),
+        hammerBtn: document.getElementById("hammerBtn"),
+        toggleBtn: playPadConfigBtn,
+        isInputActive: () => mode === "play"
+      });
+
       function currentBits() {
-        let b = stickBits | keyBits | (hammerBtnDown ? HAMMER : 0);
+        let b = touchController.getBits() | keyBits;
         if ((b & (LEFT | RIGHT)) === (LEFT | RIGHT)) b &= ~(LEFT | RIGHT);
         if ((b & (UP | DOWN)) === (UP | DOWN)) b &= ~(UP | DOWN);
         return b;
@@ -1186,6 +1150,7 @@
         mode = "play";
         editView.classList.add("hidden");
         playView.classList.remove("hidden");
+        touchController.refreshLayout();
         startPlayWorld();
         lastTime = performance.now();
         acc = 0;
@@ -1198,8 +1163,8 @@
         playRafId = null;
         pressedKeys.clear();
         keyBits = 0;
-        resetStick();
-        setHammerPressed(false);
+        touchController.closeConfig();
+        touchController.resetInputs();
         playView.classList.add("hidden");
         editView.classList.remove("hidden");
         refreshAllEdit();
@@ -1214,71 +1179,6 @@
       playIntroChk.addEventListener("change", () => {
         startPlayWorld();
         playIntroChk.blur();
-      });
-
-      // テストプレイ操作（スティック・ボタン・キーボード）
-      let activePointerId = null;
-      const MAX_R = 40;
-      const DEAD_R = 13;
-
-      function updateStickFromPoint(clientX, clientY) {
-        const rect = stickBase.getBoundingClientRect();
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        let dx = clientX - cx;
-        let dy = clientY - cy;
-        const dist = Math.hypot(dx, dy);
-        if (dist > MAX_R) {
-          dx = (dx / dist) * MAX_R;
-          dy = (dy / dist) * MAX_R;
-        }
-        stickKnob.style.transform = "translate(" + dx.toFixed(1) + "px, " + dy.toFixed(1) + "px)";
-        if (dist < DEAD_R) stickBits = 0;
-        else if (Math.abs(dx) >= Math.abs(dy)) stickBits = dx > 0 ? RIGHT : LEFT;
-        else stickBits = dy > 0 ? DOWN : UP;
-      }
-
-      function resetStick() {
-        activePointerId = null;
-        stickBits = 0;
-        stickKnob.style.transform = "translate(0px, 0px)";
-      }
-
-      stickBase.addEventListener("pointerdown", e => {
-        e.preventDefault();
-        activePointerId = e.pointerId;
-        if (stickBase.setPointerCapture) {
-          try { stickBase.setPointerCapture(e.pointerId); } catch (_) {}
-        }
-        updateStickFromPoint(e.clientX, e.clientY);
-      });
-      stickBase.addEventListener("pointermove", e => {
-        if (e.pointerId === activePointerId) {
-          e.preventDefault();
-          updateStickFromPoint(e.clientX, e.clientY);
-        }
-      });
-      stickBase.addEventListener("pointerup", e => { if (e.pointerId === activePointerId) resetStick(); });
-      stickBase.addEventListener("pointercancel", e => { if (e.pointerId === activePointerId) resetStick(); });
-
-      let hammerPointerId = null;
-      function setHammerPressed(on) {
-        hammerBtnDown = on;
-        hammerBtn.classList.toggle("pressed", on);
-      }
-      hammerBtn.addEventListener("pointerdown", e => {
-        e.preventDefault();
-        hammerPointerId = e.pointerId;
-        if (hammerBtn.setPointerCapture) {
-          try { hammerBtn.setPointerCapture(e.pointerId); } catch (_) {}
-        }
-        setHammerPressed(true);
-      });
-      hammerBtn.addEventListener("pointerup", e => {
-        if (e.pointerId === hammerPointerId) { hammerPointerId = null; setHammerPressed(false); }
-      });
-      hammerBtn.addEventListener("pointercancel", e => {
-        if (e.pointerId === hammerPointerId) { hammerPointerId = null; setHammerPressed(false); }
       });
 
       const KEY_MAP = {
@@ -1313,9 +1213,7 @@
       window.addEventListener("blur", () => {
         pressedKeys.clear();
         recomputeKeys();
-        resetStick();
-        hammerPointerId = null;
-        setHammerPressed(false);
+        touchController.resetInputs();
       });
 
       selectTool("wall1");
