@@ -1,0 +1,1641 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Robot Breaker 体験版HTML出力ツール</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 16px;
+      background: #10141e;
+      color: #eef1f6;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    .box {
+      width: 100%;
+      max-width: 680px;
+      background: #171d2b;
+      border: 1px solid #2e3952;
+      border-radius: 10px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.05rem;
+      color: #ffe868;
+    }
+    .desc {
+      margin: 0;
+      font-size: 0.84rem;
+      color: #b7c3da;
+      line-height: 1.45;
+    }
+    .status {
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #0e131e;
+      border: 1px solid #2b354b;
+      font-size: 0.84rem;
+      color: #88e6ff;
+      white-space: pre-wrap;
+    }
+    .status.err {
+      color: #ff8e86;
+      border-color: #6b3038;
+    }
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    button, a.action-link {
+      background: #2b364d;
+      color: #ffffff;
+      border: 1px solid #455679;
+      border-radius: 8px;
+      padding: 9px 13px;
+      font-size: 0.86rem;
+      font-weight: bold;
+      text-decoration: none;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    button.primary {
+      background: #2f6fed;
+      border-color: #6499ff;
+    }
+    button.good {
+      background: #1e8855;
+      border-color: #46be84;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    a.action-link.disabled {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+    .file-fallback {
+      padding: 10px;
+      background: #121724;
+      border: 1px dashed #3d4b69;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      color: #b7c3da;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .file-fallback.hidden {
+      display: none;
+    }
+    textarea {
+      width: 100%;
+      height: 180px;
+      background: #0b0f17;
+      color: #cfe0ff;
+      border: 1px solid #2d3850;
+      border-radius: 8px;
+      padding: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.72rem;
+      resize: vertical;
+    }
+    .file-list {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.72rem;
+      color: #8f9db8;
+      max-height: 110px;
+      overflow-y: auto;
+      background: #0e131e;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid #263046;
+      white-space: pre;
+    }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>Robot Breaker 独立体験版（demo.html）出力ツール</h1>
+    <p class="desc">
+      リポジトリ内のゲームエンジン・ドット絵・ステージ1〜9を読み込み、外部ファイル不要で単独動作する「demo.html」1ファイルを生成します（無音・NES操作盤固定・操作調整UIなし・全枠なしドット英語UI）。
+    </p>
+
+    <div id="statusBox" class="status">読み込み準備中...</div>
+
+    <div class="btn-row">
+      <button id="downloadBtn" class="primary" type="button" disabled>demo.html をダウンロード</button>
+      <button id="copyBtn" class="good" type="button" disabled>HTML全文をコピー</button>
+      <a id="previewLink" class="action-link disabled" href="#" target="_blank" rel="noopener">新しいタブで試遊</a>
+      <button id="reloadBtn" type="button">再読込・再生成</button>
+    </div>
+
+    <div id="fallbackBox" class="file-fallback hidden">
+      <div><strong>ローカル（file://）など自動読込できない場合：</strong>以下の19個の .js ファイルをまとめて選択してください。</div>
+      <input id="manualFileInput" type="file" multiple accept=".js">
+    </div>
+
+    <div id="fileLog" class="file-list">待機中...</div>
+    <textarea id="outputArea" readonly placeholder="ここに生成された独立 demo.html が出力されます"></textarea>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const SOURCE_FILES = [
+        "./src/constants.js",
+        "./src/actor_stepper.js",
+        "./src/hunter_ai.js",
+        "./src/enemy_ai.js",
+        "./src/battle_map.js",
+        "./src/battle_mode.js",
+        "./src/game_world.js",
+        "./data/sprites.js",
+        "./src/renderer.js",
+        "./src/battle_renderer.js",
+        "./src/render_tiles.js",
+        "./src/render_actors.js",
+        "./src/render_enemies.js",
+        "./src/char_player.js",
+        "./src/char_hunter.js",
+        "./src/char_drone.js",
+        "./src/char_crawler.js",
+        "./src/char_orb.js",
+        "./data/stages_01_10.js"
+      ];
+
+      const statusBox = document.getElementById("statusBox");
+      const downloadBtn = document.getElementById("downloadBtn");
+      const copyBtn = document.getElementById("copyBtn");
+      const previewLink = document.getElementById("previewLink");
+      const reloadBtn = document.getElementById("reloadBtn");
+      const fallbackBox = document.getElementById("fallbackBox");
+      const manualFileInput = document.getElementById("manualFileInput");
+      const fileLog = document.getElementById("fileLog");
+      const outputArea = document.getElementById("outputArea");
+
+      let generatedHtml = "";
+      let previewBlobUrl = "";
+
+      function escapeScriptBody(jsCode) {
+        return String(jsCode || "").replace(/<\/(script)/gi, "<\\/$1");
+      }
+
+      function getRuntimeAppScript() {
+        return `(function () {
+  "use strict";
+
+  const { RIGHT, LEFT, DOWN, UP, HAMMER, GameWorld, generateBattleStage } = window.BreakerGame;
+  const { Renderer } = window.BreakerRender;
+  const NORMAL_STAGES = window.BreakerNormalStages || {};
+
+  const PIXEL_FONT_7X7 = {
+    A: ["0011100", "0111110", "1100011", "1100011", "1111111", "1100011", "1100011"],
+    B: ["1111110", "1100011", "1100011", "1111110", "1100011", "1100011", "1111110"],
+    C: ["0111110", "1100011", "1100000", "1100000", "1100000", "1100011", "0111110"],
+    D: ["1111100", "1100110", "1100011", "1100011", "1100011", "1100110", "1111100"],
+    E: ["1111111", "1100000", "1100000", "1111110", "1100000", "1100000", "1111111"],
+    F: ["1111111", "1100000", "1100000", "1111110", "1100000", "1100000", "1100000"],
+    G: ["0111110", "1100011", "1100000", "1101111", "1100011", "1100011", "0111110"],
+    H: ["1100011", "1100011", "1100011", "1111111", "1100011", "1100011", "1100011"],
+    I: ["0111110", "0011100", "0011100", "0011100", "0011100", "0011100", "0111110"],
+    J: ["0011111", "0001100", "0001100", "0001100", "1101100", "1101100", "0111000"],
+    K: ["1100011", "1100110", "1101100", "1111000", "1101100", "1100110", "1100011"],
+    L: ["1100000", "1100000", "1100000", "1100000", "1100000", "1100000", "1111111"],
+    M: ["1100011", "1110111", "1111111", "1101011", "1100011", "1100011", "1100011"],
+    N: ["1100011", "1110011", "1111011", "1101111", "1100111", "1100011", "1100011"],
+    O: ["0111110", "1100011", "1100011", "1100011", "1100011", "1100011", "0111110"],
+    P: ["1111110", "1100011", "1100011", "1111110", "1100000", "1100000", "1100000"],
+    Q: ["0111110", "1100011", "1100011", "1100011", "1101011", "1100110", "0111101"],
+    R: ["1111110", "1100011", "1100011", "1111110", "1101100", "1100110", "1100011"],
+    S: ["0111110", "1100011", "1100000", "0111110", "0000011", "1100011", "0111110"],
+    T: ["1111111", "0011100", "0011100", "0011100", "0011100", "0011100", "0011100"],
+    U: ["1100011", "1100011", "1100011", "1100011", "1100011", "1100011", "0111110"],
+    V: ["1100011", "1100011", "1100011", "1100011", "0110110", "0111110", "0011100"],
+    W: ["1100011", "1100011", "1100011", "1101011", "1111111", "1110111", "1100011"],
+    X: ["1100011", "1100011", "0110110", "0011100", "0110110", "1100011", "1100011"],
+    Y: ["1100011", "1100011", "0110110", "0011100", "0011100", "0011100", "0011100"],
+    Z: ["1111111", "0000111", "0001110", "0011100", "0111000", "1110000", "1111111"],
+    "0": ["0111110", "1100011", "1100111", "1101011", "1110011", "1100011", "0111110"],
+    "1": ["0011100", "0111100", "0011100", "0011100", "0011100", "0011100", "0111110"],
+    "2": ["0111110", "1100011", "0000011", "0011110", "0111000", "1100000", "1111111"],
+    "3": ["0111110", "1100011", "0000011", "0011110", "0000011", "1100011", "0111110"],
+    "4": ["0001110", "0011110", "0110110", "1100110", "1111111", "0000110", "0000110"],
+    "5": ["1111111", "1100000", "1111110", "0000011", "0000011", "1100011", "0111110"],
+    "6": ["0111110", "1100000", "1100000", "1111110", "1100011", "1100011", "0111110"],
+    "7": ["1111111", "1100011", "0000011", "0000110", "0001100", "0001100", "0001100"],
+    "8": ["0111110", "1100011", "1100011", "0111110", "1100011", "1100011", "0111110"],
+    "9": ["0111110", "1100011", "1100011", "0111111", "0000011", "0000011", "0111110"],
+    "!": ["0111110", "0111110", "0011100", "0011100", "0011100", "0000000", "0011100"],
+    "+": ["0000000", "0011100", "0011100", "1111111", "0011100", "0011100", "0000000"],
+    "-": ["0000000", "0000000", "0000000", "0111110", "0000000", "0000000", "0000000"],
+    ":": ["0000000", "0011100", "0011100", "0000000", "0011100", "0011100", "0000000"],
+    "×": ["0000000", "1100011", "0110110", "0011100", "0110110", "1100011", "0000000"],
+    ">": ["1100000", "1111000", "1111110", "1111111", "1111110", "1111000", "1100000"],
+    " ": ["0000000", "0000000", "0000000", "0000000", "0000000", "0000000", "0000000"]
+  };
+
+  // 固定NESタッチコントローラー（位置調整なし）
+  const HAMMER_ICON_ROWS = [
+    "..................",
+    "........OOO.......",
+    ".......OWWWO......",
+    "......OWWWWWOO....",
+    "......OWWWWWWWO...",
+    ".......OWWWWWWO...",
+    "........OWWGGWWO..",
+    "........OBBGGGWWO.",
+    ".......OBBCGGGGWO.",
+    "......OBBCOOGGGGO.",
+    ".....OBBCO..OGGO..",
+    "....OBBCO....OO...",
+    "...OBBCO..........",
+    "..OBBCO...........",
+    ".OBBCO............",
+    ".OBCO.............",
+    "..OO..............",
+    ".................."
+  ];
+  const HAMMER_ICON_PALETTE = {
+    O: "#111215",
+    W: "#ffffff",
+    G: "#bfc7d4",
+    B: "#fff1c4",
+    C: "#e3b55a"
+  };
+
+  function createHammerSvg() {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 18 18");
+    svg.setAttribute("shape-rendering", "crispEdges");
+    svg.setAttribute("class", "nes-hammer-svg");
+    svg.setAttribute("aria-hidden", "true");
+    for (let y = 0; y < HAMMER_ICON_ROWS.length; y++) {
+      const row = HAMMER_ICON_ROWS[y];
+      for (let x = 0; x < row.length; x++) {
+        const fill = HAMMER_ICON_PALETTE[row[x]];
+        if (!fill) continue;
+        const rect = document.createElementNS(ns, "rect");
+        rect.setAttribute("x", String(x));
+        rect.setAttribute("y", String(y));
+        rect.setAttribute("width", "1");
+        rect.setAttribute("height", "1");
+        rect.setAttribute("fill", fill);
+        svg.appendChild(rect);
+      }
+    }
+    return svg;
+  }
+
+  function createFixedNesPad(isInputActiveFn) {
+    const stickUnit = document.getElementById("stickUnit");
+    const stickBase = document.getElementById("stickBase");
+    const stickKnob = document.getElementById("stickKnob");
+    const hammerUnit = document.getElementById("hammerUnit");
+    const hammerBtn = document.getElementById("hammerBtn");
+    hammerBtn.appendChild(createHammerSvg());
+
+    const STICK_DEAD = 8;
+    const STICK_RANGE = 30;
+    let stickBits = 0;
+    let hammerDown = false;
+    let stickPointerId = null;
+    let hammerPointerId = null;
+
+    function updateLights() {
+      stickUnit.classList.toggle("dir-u", (stickBits & UP) !== 0);
+      stickUnit.classList.toggle("dir-d", (stickBits & DOWN) !== 0);
+      stickUnit.classList.toggle("dir-l", (stickBits & LEFT) !== 0);
+      stickUnit.classList.toggle("dir-r", (stickBits & RIGHT) !== 0);
+    }
+
+    function updateStick(cxClient, cyClient) {
+      const rect = stickBase.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      let dx = cxClient - cx;
+      let dy = cyClient - cy;
+      const dist = Math.hypot(dx, dy);
+      if (dist > STICK_RANGE && dist > 0) {
+        dx = (dx / dist) * STICK_RANGE;
+        dy = (dy / dist) * STICK_RANGE;
+      }
+      stickKnob.style.transform = "translate3d(" + dx.toFixed(1) + "px, " + dy.toFixed(1) + "px, 0)";
+      if (dist < STICK_DEAD) {
+        stickBits = 0;
+      } else if (Math.abs(dx) >= Math.abs(dy)) {
+        stickBits = dx > 0 ? RIGHT : LEFT;
+      } else {
+        stickBits = dy > 0 ? DOWN : UP;
+      }
+      updateLights();
+    }
+
+    function resetStick() {
+      stickPointerId = null;
+      stickBits = 0;
+      stickKnob.style.transform = "translate3d(0px, 0px, 0)";
+      updateLights();
+    }
+
+    function setHammer(on) {
+      hammerDown = !!on;
+      hammerBtn.classList.toggle("pressed", hammerDown);
+    }
+
+    stickUnit.addEventListener("pointerdown", function (e) {
+      if (!isInputActiveFn()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      stickPointerId = e.pointerId;
+      if (stickUnit.setPointerCapture) {
+        try { stickUnit.setPointerCapture(e.pointerId); } catch (_) {}
+      }
+      updateStick(e.clientX, e.clientY);
+    });
+    stickUnit.addEventListener("pointermove", function (e) {
+      if (e.pointerId !== stickPointerId) return;
+      e.preventDefault();
+      updateStick(e.clientX, e.clientY);
+    });
+    function endStick(e) {
+      if (e.pointerId === stickPointerId) resetStick();
+    }
+    stickUnit.addEventListener("pointerup", endStick);
+    stickUnit.addEventListener("pointercancel", endStick);
+
+    hammerUnit.addEventListener("pointerdown", function (e) {
+      if (!isInputActiveFn()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      hammerPointerId = e.pointerId;
+      if (hammerUnit.setPointerCapture) {
+        try { hammerUnit.setPointerCapture(e.pointerId); } catch (_) {}
+      }
+      setHammer(true);
+    });
+    function endHammer(e) {
+      if (e.pointerId === hammerPointerId) {
+        hammerPointerId = null;
+        setHammer(false);
+      }
+    }
+    hammerUnit.addEventListener("pointerup", endHammer);
+    hammerUnit.addEventListener("pointercancel", endHammer);
+
+    return {
+      getBits() {
+        if (!isInputActiveFn()) return 0;
+        return stickBits | (hammerDown ? HAMMER : 0);
+      },
+      resetInputs() {
+        resetStick();
+        hammerPointerId = null;
+        setHammer(false);
+      }
+    };
+  }
+
+  const DEMO_MAX_STAGE = 9;
+  const CHALLENGE_INITIAL_LIVES = 10;
+  const VIEW_W = 256;
+  const VIEW_H = 240;
+
+  const topHud = document.getElementById("topHud");
+  const statusCanvas = document.getElementById("statusCanvas");
+  const retryBtn = document.getElementById("retryBtn");
+  const retryCanvas = document.getElementById("retryCanvas");
+  const titleBtn = document.getElementById("titleBtn");
+  const titleCanvas = document.getElementById("titleCanvas");
+  const screenWrap = document.getElementById("screenWrap");
+  const canvas = document.getElementById("gameCanvas");
+  const controlsArea = document.getElementById("controlsArea");
+
+  const renderer = new Renderer(canvas, { viewHeight: VIEW_H });
+  const ctx = renderer.ctx;
+
+  let appScreen = "title";
+  let playType = "normal";
+  let currentStage = 1;
+  let clearStreak = 0;
+  let lives = CHALLENGE_INITIAL_LIVES;
+  let isBonusBattle = false;
+  let pendingNextStage = 1;
+  let bonusLifeAwarded = false;
+
+  let world = null;
+  let screenFrame = 0;
+  let titleCursor = 0;
+  let selectCursor = 0;
+  let overCursor = 0;
+  let keyBits = 0;
+  let lastKeyBits = 0;
+  let menuWaitRelease = false;
+  let resultHammerWaitPrev = false;
+  let lastStatusSig = "";
+
+  const nesPad = createFixedNesPad(function () {
+    return appScreen === "playing";
+  });
+
+  function drawDotText(targetCtx, text, x, y, options) {
+    const opts = options || {};
+    const str = String(text || "").toUpperCase();
+    if (!str) return;
+    const scale = opts.scale || 2;
+    const stepX = 8 * scale;
+    const totalW = Math.max(0, str.length * stepX - scale);
+    const align = opts.align || "left";
+    let startX = Math.round(x);
+    if (align === "center") startX = Math.round(x - totalW / 2);
+    else if (align === "right") startX = Math.round(x - totalW);
+    const startY = Math.round(y);
+    const outline = opts.outlineColor !== undefined ? opts.outlineColor : "#04060c";
+    const rowColors = Array.isArray(opts.rowColors) ? opts.rowColors : null;
+    const baseColor = opts.color || "#ffffff";
+
+    const drawCell = (gx, gy, w, h, color) => {
+      targetCtx.fillStyle = color;
+      targetCtx.fillRect(gx, gy, w, h);
+    };
+
+    if (outline) {
+      for (let i = 0; i < str.length; i++) {
+        const glyph = PIXEL_FONT_7X7[str[i]] || PIXEL_FONT_7X7[" "];
+        const gx = startX + i * stepX;
+        for (let r = 0; r < 7; r++) {
+          const line = glyph[r];
+          for (let c = 0; c < 7; c++) {
+            if (line[c] !== "1") continue;
+            const px = gx + c * scale;
+            const py = startY + r * scale;
+            drawCell(px - scale, py, scale, scale, outline);
+            drawCell(px + scale, py, scale, scale, outline);
+            drawCell(px, py - scale, scale, scale, outline);
+            drawCell(px, py + scale, scale, scale, outline);
+            drawCell(px + scale, py + scale, scale, scale, outline);
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < str.length; i++) {
+      const glyph = PIXEL_FONT_7X7[str[i]] || PIXEL_FONT_7X7[" "];
+      const gx = startX + i * stepX;
+      for (let r = 0; r < 7; r++) {
+        const line = glyph[r];
+        const rc = rowColors ? (rowColors[r] || baseColor) : baseColor;
+        for (let c = 0; c < 7; c++) {
+          if (line[c] === "1") {
+            drawCell(gx + c * scale, startY + r * scale, scale, scale, rc);
+          }
+        }
+      }
+    }
+  }
+
+  function renderButtonDotCanvas(cEl, text, color) {
+    const scale = 2;
+    const w = Math.max(16, (text.length * 8 - 1) * scale + 4);
+    const h = 7 * scale + 4;
+    if (cEl.width !== w || cEl.height !== h) {
+      cEl.width = w;
+      cEl.height = h;
+    }
+    const g = cEl.getContext("2d");
+    g.imageSmoothingEnabled = false;
+    g.clearRect(0, 0, w, h);
+    drawDotText(g, text, 2, 2, { scale, color, outlineColor: "#04060c", align: "left" });
+  }
+
+  function refreshTopHud() {
+    let statusKind = "";
+    let statusVal = "";
+    if (playType === "challenge") {
+      statusKind = "lives";
+      statusVal = String(Math.max(0, lives));
+    } else if (world && world.isBattleMode) {
+      statusKind = "battle";
+      statusVal = "VS HUNTER";
+    } else {
+      statusKind = "stage";
+      statusVal = "STAGE " + currentStage;
+    }
+
+    const sig = statusKind + ":" + statusVal;
+    if (sig === lastStatusSig) return;
+    lastStatusSig = sig;
+
+    const g = statusCanvas.getContext("2d");
+    g.imageSmoothingEnabled = false;
+    const scale = 2;
+    const h = 20;
+
+    if (statusKind === "lives") {
+      const text = "×" + statusVal;
+      const w = Math.max(64, 24 + text.length * 8 * scale + 4);
+      if (statusCanvas.width !== w || statusCanvas.height !== h) {
+        statusCanvas.width = w;
+        statusCanvas.height = h;
+      }
+      g.clearRect(0, 0, w, h);
+      const faceSrc = renderer.playerSprites && renderer.playerSprites.idle_R;
+      if (faceSrc) {
+        g.imageSmoothingEnabled = false;
+        g.drawImage(faceSrc, 3, 1, 11, 8, 1, 2, 22, 16);
+      }
+      drawDotText(g, text, 25, 3, {
+        scale,
+        color: lives <= 2 ? "#ff6858" : "#ffffff",
+        outlineColor: "#04060c",
+        align: "left"
+      });
+    } else {
+      const text = statusVal;
+      const w = Math.max(80, text.length * 8 * scale + 4);
+      if (statusCanvas.width !== w || statusCanvas.height !== h) {
+        statusCanvas.width = w;
+        statusCanvas.height = h;
+      }
+      g.clearRect(0, 0, w, h);
+      drawDotText(g, text, 2, 3, {
+        scale,
+        color: statusKind === "battle" ? "#ff8858" : "#88ecff",
+        outlineColor: "#04060c",
+        align: "left"
+      });
+    }
+  }
+
+  let fullSkyField = null;
+  function getFullSkyField() {
+    if (fullSkyField) return fullSkyField;
+    const themes = [
+      { core: "#ffffff", mid: "#a8dcff", outer: "#486eb8" },
+      { core: "#f4ffff", mid: "#80e2ff", outer: "#386da4" },
+      { core: "#fff6ff", mid: "#d49eff", outer: "#64449c" },
+      { core: "#fffcf0", mid: "#ffe08c", outer: "#946c38" },
+      { core: "#fff2f6", mid: "#ffa4be", outer: "#883e5c" }
+    ];
+    let seed = 0x4b1d9c37;
+    const rand = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+    const stars = [];
+    const nebula = [];
+    const nebulaColors = ["#384a86", "#4f3e7c", "#2d5584"];
+
+    for (let i = 0; i < 64; i++) {
+      const nx = Math.floor(rand() * VIEW_W);
+      const t = nx / VIEW_W;
+      const centerY = 128 - t * 62 + Math.sin(t * Math.PI * 2.1) * 18;
+      const ny = Math.round(centerY + (rand() - 0.5) * 44);
+      if (ny < 4 || ny > VIEW_H - 4) continue;
+      nebula.push({
+        x: nx,
+        y: ny,
+        w: rand() < 0.28 ? 2 : 1,
+        color: nebulaColors[Math.floor(rand() * nebulaColors.length)],
+        alpha: 0.14 + rand() * 0.10
+      });
+    }
+
+    for (let r = 0; r < 15; r++) {
+      const yMin = 4 + r * 15;
+      const yMax = Math.min(VIEW_H - 6, yMin + 13);
+      for (let c = 0; c < 16; c++) {
+        if (rand() > 0.42) continue;
+        const xMin = c * 16 + 2;
+        const xMax = Math.min(VIEW_W - 3, xMin + 12);
+        const sx = xMin + Math.floor(rand() * (xMax - xMin + 1));
+        const sy = yMin + Math.floor(rand() * (yMax - yMin + 1));
+        const roll = rand();
+        let type = 0;
+        if (roll > 0.93) type = 3;
+        else if (roll > 0.78) type = 2;
+        else if (roll > 0.56) type = 1;
+
+        const tr = rand();
+        let tIdx = 0;
+        if (tr > 0.90) tIdx = 4;
+        else if (tr > 0.72) tIdx = 3;
+        else if (tr > 0.48) tIdx = 2;
+        else if (tr > 0.24) tIdx = 1;
+
+        stars.push({
+          x: sx,
+          y: sy,
+          type,
+          theme: themes[tIdx],
+          phase: Math.floor(rand() * 256),
+          speed: type === 0
+            ? (18 + Math.floor(rand() * 16))
+            : (type === 1 ? (10 + Math.floor(rand() * 8)) : (6 + Math.floor(rand() * 4)))
+        });
+      }
+    }
+    fullSkyField = { stars, nebula };
+    return fullSkyField;
+  }
+
+  function drawFullNightSky(frame) {
+    const grad = ctx.createLinearGradient(0, 0, 0, VIEW_H);
+    grad.addColorStop(0.00, "#03040a");
+    grad.addColorStop(0.28, "#080c1e");
+    grad.addColorStop(0.58, "#14173b");
+    grad.addColorStop(0.84, "#0b122a");
+    grad.addColorStop(1.00, "#080b14");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+
+    const field = getFullSkyField();
+    ctx.save();
+    for (let i = 0; i < field.nebula.length; i++) {
+      const n = field.nebula[i];
+      ctx.globalAlpha = n.alpha;
+      ctx.fillStyle = n.color;
+      ctx.fillRect(n.x, n.y, n.w, 1);
+    }
+
+    for (let i = 0; i < field.stars.length; i++) {
+      const s = field.stars[i];
+      const tick = Math.floor((frame + s.phase) / s.speed);
+      const th = s.theme;
+
+      if (s.type === 0) {
+        const step = tick & 3;
+        ctx.globalAlpha = step === 2 ? 0.85 : (step === 0 ? 0.45 : 0.65);
+        ctx.fillStyle = step === 2 ? th.mid : th.outer;
+        ctx.fillRect(s.x, s.y, 1, 1);
+      } else if (s.type === 1) {
+        const step = tick & 3;
+        ctx.globalAlpha = step === 1 ? 0.95 : 0.72;
+        ctx.fillStyle = step === 1 ? th.core : th.mid;
+        ctx.fillRect(s.x, s.y, 1, 1);
+      } else if (s.type === 2) {
+        const step = tick % 8;
+        if (step === 4) {
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = th.core;
+          ctx.fillRect(s.x, s.y, 1, 1);
+          ctx.fillStyle = th.mid;
+          ctx.fillRect(s.x - 1, s.y, 1, 1);
+          ctx.fillRect(s.x + 1, s.y, 1, 1);
+          ctx.fillRect(s.x, s.y - 1, 1, 1);
+          ctx.fillRect(s.x, s.y + 1, 1, 1);
+        } else {
+          ctx.globalAlpha = 0.85;
+          ctx.fillStyle = th.mid;
+          ctx.fillRect(s.x, s.y, 1, 1);
+        }
+      } else {
+        const step = tick % 10;
+        if (step === 5) {
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = th.core;
+          ctx.fillRect(s.x, s.y, 1, 1);
+          ctx.fillStyle = th.mid;
+          ctx.fillRect(s.x - 1, s.y, 1, 1);
+          ctx.fillRect(s.x + 1, s.y, 1, 1);
+          ctx.fillRect(s.x, s.y - 1, 1, 1);
+          ctx.fillRect(s.x, s.y + 1, 1, 1);
+          ctx.globalAlpha = 0.72;
+          ctx.fillStyle = th.outer;
+          ctx.fillRect(s.x - 2, s.y, 1, 1);
+          ctx.fillRect(s.x + 2, s.y, 1, 1);
+          ctx.fillRect(s.x, s.y - 2, 1, 1);
+          ctx.fillRect(s.x, s.y + 2, 1, 1);
+        } else {
+          ctx.globalAlpha = 0.90;
+          ctx.fillStyle = th.core;
+          ctx.fillRect(s.x, s.y, 1, 1);
+          ctx.globalAlpha = 0.55;
+          ctx.fillStyle = th.outer;
+          ctx.fillRect(s.x - 1, s.y, 1, 1);
+          ctx.fillRect(s.x + 1, s.y, 1, 1);
+          ctx.fillRect(s.x, s.y - 1, 1, 1);
+          ctx.fillRect(s.x, s.y + 1, 1, 1);
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawSteelBeam(x, y, width) {
+    ctx.fillStyle = "#2858b8";
+    ctx.fillRect(x, y, width, 6);
+    ctx.fillStyle = "#5890f8";
+    ctx.fillRect(x, y, width, 2);
+    for (let bx = x; bx < x + width; bx += 16) {
+      ctx.fillStyle = "#183070";
+      ctx.fillRect(bx + 2, y + 2, 12, 2);
+    }
+  }
+
+  function ensureMenuCanvasSize() {
+    if (canvas.width !== VIEW_W || canvas.height !== VIEW_H) {
+      canvas.width = VIEW_W;
+      canvas.height = VIEW_H;
+      ctx.imageSmoothingEnabled = false;
+    }
+    canvas.style.aspectRatio = VIEW_W + " / " + VIEW_H;
+    screenWrap.style.maxWidth = "512px";
+    canvas.style.width = "100%";
+  }
+
+  function setScreenMode(nextScreen) {
+    appScreen = nextScreen;
+    screenFrame = 0;
+    menuWaitRelease = true;
+    const isPlaying = appScreen === "playing";
+    topHud.classList.toggle("hidden", !isPlaying);
+    controlsArea.classList.toggle("hidden", !isPlaying);
+    if (!isPlaying) {
+      nesPad.resetInputs();
+      ensureMenuCanvasSize();
+    } else {
+      refreshTopHud();
+    }
+  }
+
+  function applyPlayZoom() {
+    if (!world) return;
+    screenWrap.style.maxWidth = Math.max(512, world.worldWidth * 2) + "px";
+    canvas.style.width = "100%";
+  }
+
+  function getPlayBits() {
+    let b = nesPad.getBits() | keyBits;
+    if ((b & (LEFT | RIGHT)) === (LEFT | RIGHT)) b &= ~(LEFT | RIGHT);
+    if ((b & (UP | DOWN)) === (UP | DOWN)) b &= ~(UP | DOWN);
+    return b;
+  }
+
+  function startNormalOrChallengeStage(stageNum) {
+    const cfg = NORMAL_STAGES[stageNum] || NORMAL_STAGES[String(stageNum)];
+    if (!cfg) return;
+    currentStage = stageNum;
+    isBonusBattle = false;
+    bonusLifeAwarded = false;
+    world = new GameWorld({
+      stageNumber: stageNum,
+      cols: cfg.cols,
+      rows: cfg.rows,
+      tiles: cfg.tiles,
+      timedBombs: cfg.timedBombs,
+      timedBombSec: cfg.timedBombSec,
+      player: cfg.player,
+      hunter: cfg.hunter,
+      enemies: cfg.enemies,
+      orb: cfg.orb,
+      orbFast: cfg.orbFast,
+      soundEngine: null
+    });
+    const bitsNow = getPlayBits();
+    world.player.prevHammer = (bitsNow & HAMMER) !== 0;
+    resultHammerWaitPrev = (bitsNow & HAMMER) !== 0;
+    setScreenMode("playing");
+    applyPlayZoom();
+    renderer.resetCamera(world);
+    refreshTopHud();
+  }
+
+  function startBattleStage(opts) {
+    const o = opts || {};
+    isBonusBattle = !!o.isBonusBattle;
+    pendingNextStage = o.pendingNextStage || 1;
+    bonusLifeAwarded = false;
+    const cfg = generateBattleStage();
+    world = new GameWorld({
+      stageNumber: 1,
+      cols: cfg.cols,
+      rows: cfg.rows,
+      tiles: cfg.tiles,
+      player: cfg.player,
+      hunter: cfg.hunter,
+      enemies: cfg.enemies,
+      orb: false,
+      isBattleMode: true,
+      soundEngine: null
+    });
+    const bitsNow = getPlayBits();
+    world.player.prevHammer = (bitsNow & HAMMER) !== 0;
+    resultHammerWaitPrev = (bitsNow & HAMMER) !== 0;
+    setScreenMode("playing");
+    applyPlayZoom();
+    renderer.resetCamera(world);
+    refreshTopHud();
+  }
+
+  function startChallengeMode() {
+    playType = "challenge";
+    lives = CHALLENGE_INITIAL_LIVES;
+    clearStreak = 0;
+    startNormalOrChallengeStage(1);
+  }
+
+  function startNormalStage(stageNum) {
+    playType = "normal";
+    clearStreak = 0;
+    startNormalOrChallengeStage(stageNum);
+  }
+
+  function startEndlessBattleMode() {
+    playType = "battle";
+    clearStreak = 0;
+    startBattleStage({ isBonusBattle: false });
+  }
+
+  function goToTitle() {
+    world = null;
+    titleCursor = 0;
+    setScreenMode("title");
+  }
+
+  function goToSelect() {
+    world = null;
+    selectCursor = 0;
+    setScreenMode("select");
+  }
+
+  function goToGameOver() {
+    world = null;
+    overCursor = 0;
+    setScreenMode("gameover");
+  }
+
+  function goToEnding() {
+    world = null;
+    setScreenMode("ending");
+  }
+
+  function handleRetryButton() {
+    if (appScreen === "gameover") {
+      startChallengeMode();
+      return;
+    }
+    if (appScreen !== "playing" || !world) return;
+    if (world.stageCleared) return;
+    if (world.battleManager && world.battleManager.ended) return;
+    if (playType === "challenge") {
+      lives -= 1;
+      if (lives <= 0) {
+        lives = 0;
+        goToGameOver();
+        return;
+      }
+    }
+    if (world.isBattleMode) {
+      startBattleStage({ isBonusBattle, pendingNextStage });
+    } else {
+      startNormalOrChallengeStage(currentStage);
+    }
+  }
+
+  function finishBattleAndProceed() {
+    if (isBonusBattle) {
+      startNormalOrChallengeStage(pendingNextStage);
+    } else {
+      startBattleStage({ isBonusBattle: false });
+    }
+  }
+
+  function handleStageClearFinished() {
+    if (currentStage >= DEMO_MAX_STAGE) {
+      goToEnding();
+      return;
+    }
+    clearStreak += 1;
+    const nextStage = currentStage + 1;
+    if (clearStreak > 0 && clearStreak % 5 === 0) {
+      startBattleStage({ isBonusBattle: true, pendingNextStage: nextStage });
+    } else {
+      startNormalOrChallengeStage(nextStage);
+    }
+  }
+
+  const TITLE_BUTTONS = [
+    { label: "NORMAL", y: 150, hit: { x: 48, y: 144, w: 160, h: 22 } },
+    { label: "CHALLENGE", y: 174, hit: { x: 48, y: 168, w: 160, h: 22 } },
+    { label: "BATTLE", y: 198, hit: { x: 48, y: 192, w: 160, h: 22 } }
+  ];
+
+  function drawTitleScreen() {
+    drawFullNightSky(screenFrame);
+    drawDotText(ctx, "ROBOT", VIEW_W / 2, 18, {
+      scale: 3,
+      align: "center",
+      outlineColor: "#04060e",
+      rowColors: ["#ffffff", "#ffffff", "#d2ecff", "#98d4ff", "#6ab2f0", "#4284d2", "#285aa8"]
+    });
+    drawDotText(ctx, "BREAKER", VIEW_W / 2, 46, {
+      scale: 3,
+      align: "center",
+      outlineColor: "#04060e",
+      rowColors: ["#fff8a8", "#fff068", "#ffc438", "#ff9024", "#ee581c", "#c83014", "#8e180c"]
+    });
+
+    const floorY = 122;
+    drawSteelBeam(0, floorY, VIEW_W);
+    const drawBaseY = floorY - 26;
+    const pStep = Math.floor(screenFrame / 5) & 3;
+    const pOff = (pStep === 0 || pStep === 2) ? 1 : 0;
+    const eStep = Math.floor(screenFrame / 4) & 3;
+
+    const crImg = renderer.crawlerSprites && renderer.crawlerSprites.front["walk" + eStep + "_R"];
+    if (crImg) ctx.drawImage(crImg, 54, drawBaseY);
+
+    const drImg = renderer.droneSprites && renderer.droneSprites.normalFront["walk" + eStep + "_R"];
+    if (drImg) ctx.drawImage(drImg, 98, drawBaseY);
+
+    const huImg = renderer.hunterSprites && renderer.hunterSprites["walk" + pStep + "_R"];
+    if (huImg) {
+      ctx.drawImage(huImg, 142, drawBaseY);
+      renderer.drawHunterBackHammer(142, drawBaseY + pOff, RIGHT, "side");
+    }
+
+    const plImg = renderer.playerSprites && renderer.playerSprites["walk" + pStep + "_R"];
+    if (plImg) {
+      ctx.drawImage(plImg, 186, drawBaseY);
+      renderer.drawPlayerBackHammer(186, drawBaseY + pOff, RIGHT, "side");
+    }
+
+    for (let i = 0; i < TITLE_BUTTONS.length; i++) {
+      const btn = TITLE_BUTTONS[i];
+      const selected = i === titleCursor;
+      drawDotText(ctx, btn.label, VIEW_W / 2, btn.y, {
+        scale: 2,
+        align: "center",
+        color: selected ? "#ffe868" : "#ffffff",
+        outlineColor: "#04060c"
+      });
+      if (selected) {
+        const labelW = (btn.label.length * 8 - 1) * 2;
+        const curX = Math.round(VIEW_W / 2 - labelW / 2 - 20);
+        const curBob = ((screenFrame >> 3) & 1) ? 2 : 0;
+        drawDotText(ctx, ">", curX + curBob, btn.y, {
+          scale: 2,
+          align: "left",
+          color: "#ff6448",
+          outlineColor: "#04060c"
+        });
+      }
+    }
+  }
+
+  const SELECT_BUTTONS = (function () {
+    const list = [];
+    const colsX = [68, 128, 188];
+    const rowsY = [66, 108, 150];
+    for (let i = 0; i < 9; i++) {
+      const r = Math.floor(i / 3);
+      const c = i % 3;
+      list.push({
+        kind: "stage",
+        stage: i + 1,
+        label: String(i + 1),
+        cx: colsX[c],
+        y: rowsY[r],
+        hit: { x: colsX[c] - 26, y: rowsY[r] - 8, w: 52, h: 36 }
+      });
+    }
+    list.push({
+      kind: "title",
+      label: "TITLE",
+      cx: VIEW_W / 2,
+      y: 204,
+      hit: { x: 72, y: 196, w: 112, h: 26 }
+    });
+    return list;
+  })();
+
+  function drawSelectScreen() {
+    drawFullNightSky(screenFrame);
+    drawDotText(ctx, "SELECT STAGE", VIEW_W / 2, 24, {
+      scale: 2,
+      align: "center",
+      color: "#88ecff",
+      outlineColor: "#04060c"
+    });
+    for (let i = 0; i < SELECT_BUTTONS.length; i++) {
+      const item = SELECT_BUTTONS[i];
+      const selected = i === selectCursor;
+      const sc = item.kind === "stage" ? 3 : 2;
+      drawDotText(ctx, item.label, item.cx, item.y, {
+        scale: sc,
+        align: "center",
+        color: selected ? "#ffe868" : "#ffffff",
+        outlineColor: "#04060c"
+      });
+      if (selected) {
+        const w = (item.label.length * 8 - 1) * sc;
+        const curX = Math.round(item.cx - w / 2 - (item.kind === "stage" ? 20 : 18));
+        const curY = item.kind === "stage" ? (item.y + 4) : item.y;
+        const curBob = ((screenFrame >> 3) & 1) ? 2 : 0;
+        drawDotText(ctx, ">", curX + curBob, curY, {
+          scale: 2,
+          align: "left",
+          color: "#ff6448",
+          outlineColor: "#04060c"
+        });
+      }
+    }
+  }
+
+  const OVER_BUTTONS = [
+    { label: "RETRY", y: 146, hit: { x: 68, y: 138, w: 120, h: 24 } },
+    { label: "TITLE", y: 176, hit: { x: 68, y: 168, w: 120, h: 24 } }
+  ];
+
+  function drawGameOverScreen() {
+    drawFullNightSky(screenFrame);
+    drawDotText(ctx, "GAME OVER", VIEW_W / 2, 74, {
+      scale: 2,
+      align: "center",
+      color: "#ff5244",
+      outlineColor: "#04060c"
+    });
+    for (let i = 0; i < OVER_BUTTONS.length; i++) {
+      const btn = OVER_BUTTONS[i];
+      const selected = i === overCursor;
+      drawDotText(ctx, btn.label, VIEW_W / 2, btn.y, {
+        scale: 2,
+        align: "center",
+        color: selected ? "#ffe868" : "#ffffff",
+        outlineColor: "#04060c"
+      });
+      if (selected) {
+        const w = (btn.label.length * 8 - 1) * 2;
+        const curX = Math.round(VIEW_W / 2 - w / 2 - 20);
+        const curBob = ((screenFrame >> 3) & 1) ? 2 : 0;
+        drawDotText(ctx, ">", curX + curBob, btn.y, {
+          scale: 2,
+          align: "left",
+          color: "#ff6448",
+          outlineColor: "#04060c"
+        });
+      }
+    }
+  }
+
+  const ENDING_TITLE_BTN = { label: "TITLE", y: 204, hit: { x: 72, y: 196, w: 112, h: 26 } };
+
+  function drawEndingScreen() {
+    drawFullNightSky(screenFrame);
+    drawDotText(ctx, "THANK YOU", VIEW_W / 2, 34, {
+      scale: 2,
+      align: "center",
+      color: "#ffe868",
+      outlineColor: "#04060c"
+    });
+    drawDotText(ctx, "FOR PLAYING!", VIEW_W / 2, 60, {
+      scale: 2,
+      align: "center",
+      color: "#ffffff",
+      outlineColor: "#04060c"
+    });
+
+    const floorY = 166;
+    drawSteelBeam(32, floorY, VIEW_W - 64);
+    const drawBaseY = floorY - 26;
+
+    const waveOn = ((screenFrame >> 4) & 1) === 1;
+    if (renderer.playerSprites) {
+      const pImg = waveOn
+        ? (renderer.playerSprites.deadFall_R || renderer.playerSprites.idle_R)
+        : (renderer.playerSprites.deadLook_R || renderer.playerSprites.idle_R);
+      if (pImg) ctx.drawImage(pImg, 102, drawBaseY);
+    }
+
+    if (renderer.droneSprites && renderer.droneSprites.normalFront) {
+      const dStep = Math.floor(screenFrame / 6) & 3;
+      const dPose = (dStep === 1 || dStep === 3) ? ("walk" + dStep + "_L") : "idle_L";
+      const dImg = renderer.droneSprites.normalFront[dPose] || renderer.droneSprites.normalFront.idle_L;
+      if (dImg) ctx.drawImage(dImg, 142, drawBaseY);
+    }
+
+    const btnColor = ((screenFrame >> 4) & 1) === 0 ? "#88ecff" : "#ffffff";
+    drawDotText(ctx, ENDING_TITLE_BTN.label, VIEW_W / 2, ENDING_TITLE_BTN.y, {
+      scale: 2,
+      align: "center",
+      color: btnColor,
+      outlineColor: "#04060c"
+    });
+    const labelW = (ENDING_TITLE_BTN.label.length * 8 - 1) * 2;
+    drawDotText(ctx, ">", Math.round(VIEW_W / 2 - labelW / 2 - 18), ENDING_TITLE_BTN.y, {
+      scale: 2,
+      align: "left",
+      color: "#ffe868",
+      outlineColor: "#04060c"
+    });
+  }
+
+  function executeTitleChoice(idx) {
+    if (idx === 0) goToSelect();
+    else if (idx === 1) startChallengeMode();
+    else startEndlessBattleMode();
+  }
+
+  function executeSelectChoice(idx) {
+    const item = SELECT_BUTTONS[idx];
+    if (!item) return;
+    if (item.kind === "title") goToTitle();
+    else startNormalStage(item.stage);
+  }
+
+  function handleMenuKeyEdges(edgeBits, rawBits) {
+    if (menuWaitRelease) {
+      if (rawBits === 0) menuWaitRelease = false;
+      return;
+    }
+    const confirm = (edgeBits & HAMMER) !== 0;
+
+    if (appScreen === "title") {
+      if (edgeBits & UP) titleCursor = (titleCursor + 2) % 3;
+      if (edgeBits & DOWN) titleCursor = (titleCursor + 1) % 3;
+      if (confirm) executeTitleChoice(titleCursor);
+    } else if (appScreen === "select") {
+      if (edgeBits & LEFT) {
+        if (selectCursor < 9) {
+          const r = Math.floor(selectCursor / 3);
+          const c = (selectCursor + 2) % 3;
+          selectCursor = r * 3 + c;
+        }
+      } else if (edgeBits & RIGHT) {
+        if (selectCursor < 9) {
+          const r = Math.floor(selectCursor / 3);
+          const c = (selectCursor + 1) % 3;
+          selectCursor = r * 3 + c;
+        }
+      } else if (edgeBits & UP) {
+        if (selectCursor === 9) selectCursor = 7;
+        else if (selectCursor >= 3) selectCursor -= 3;
+        else selectCursor = 9;
+      } else if (edgeBits & DOWN) {
+        if (selectCursor === 9) selectCursor = 1;
+        else if (selectCursor <= 5) selectCursor += 3;
+        else selectCursor = 9;
+      }
+      if (confirm) executeSelectChoice(selectCursor);
+    } else if (appScreen === "gameover") {
+      if (screenFrame < 18) return;
+      if (edgeBits & (UP | DOWN)) overCursor = overCursor === 0 ? 1 : 0;
+      if (confirm) {
+        if (overCursor === 0) startChallengeMode();
+        else goToTitle();
+      }
+    } else if (appScreen === "ending") {
+      if (screenFrame < 24) return;
+      if (confirm) goToTitle();
+    }
+  }
+
+  function hitTest(box, cx, cy) {
+    return cx >= box.x && cx <= box.x + box.w && cy >= box.y && cy <= box.y + box.h;
+  }
+
+  canvas.addEventListener("pointerdown", function (e) {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+    if (appScreen === "title") {
+      e.preventDefault();
+      for (let i = 0; i < TITLE_BUTTONS.length; i++) {
+        if (hitTest(TITLE_BUTTONS[i].hit, cx, cy)) {
+          titleCursor = i;
+          executeTitleChoice(i);
+          return;
+        }
+      }
+      return;
+    }
+
+    if (appScreen === "select") {
+      e.preventDefault();
+      for (let i = 0; i < SELECT_BUTTONS.length; i++) {
+        if (hitTest(SELECT_BUTTONS[i].hit, cx, cy)) {
+          selectCursor = i;
+          executeSelectChoice(i);
+          return;
+        }
+      }
+      return;
+    }
+
+    if (appScreen === "gameover") {
+      if (screenFrame < 18) return;
+      e.preventDefault();
+      for (let i = 0; i < OVER_BUTTONS.length; i++) {
+        if (hitTest(OVER_BUTTONS[i].hit, cx, cy)) {
+          overCursor = i;
+          if (i === 0) startChallengeMode();
+          else goToTitle();
+          return;
+        }
+      }
+      return;
+    }
+
+    if (appScreen === "ending") {
+      if (screenFrame < 24) return;
+      e.preventDefault();
+      if (hitTest(ENDING_TITLE_BTN.hit, cx, cy)) goToTitle();
+      return;
+    }
+
+    if (appScreen === "playing" && world && world.battleManager && world.battleManager.resultFinished) {
+      e.preventDefault();
+      finishBattleAndProceed();
+    }
+  });
+
+  function stepPlayingFrame() {
+    if (!world) return false;
+    const bits = getPlayBits();
+
+    if (world.battleManager && world.battleManager.resultFinished) {
+      const hNow = (bits & HAMMER) !== 0;
+      const hEdge = hNow && !resultHammerWaitPrev;
+      resultHammerWaitPrev = hNow;
+      if (hEdge) {
+        finishBattleAndProceed();
+        return true;
+      }
+      world.step(0);
+      return false;
+    }
+
+    resultHammerWaitPrev = (bits & HAMMER) !== 0;
+    world.step(bits);
+
+    if (isBonusBattle &&
+        playType === "challenge" &&
+        !bonusLifeAwarded &&
+        world.battleManager &&
+        world.battleManager.ended &&
+        world.battleManager.resultPhase === 2 &&
+        world.battleManager.resultTimer >= 150) {
+      if (world.battleManager.scores.player.total > world.battleManager.scores.hunter.total) {
+        lives += 2;
+        bonusLifeAwarded = true;
+        refreshTopHud();
+      }
+    }
+
+    if (world.deathFinished || world.tryAgainFinished) {
+      if (playType === "challenge") {
+        lives -= 1;
+        if (lives <= 0) {
+          lives = 0;
+          goToGameOver();
+          return true;
+        }
+      }
+      startNormalOrChallengeStage(currentStage);
+      return true;
+    }
+
+    if (world.clearFinished) {
+      handleStageClearFinished();
+      return true;
+    }
+    return false;
+  }
+
+  function renderPlayingFrame() {
+    if (!world) return;
+    renderer.draw(world);
+    if (isBonusBattle &&
+        playType === "challenge" &&
+        world.battleManager &&
+        world.battleManager.ended &&
+        world.battleManager.resultPhase === 2 &&
+        world.battleManager.resultTimer >= 150) {
+      if (world.battleManager.scores.player.total > world.battleManager.scores.hunter.total) {
+        drawDotText(ctx, "+2 LIFE!", world.worldWidth / 2, 208, {
+          scale: 1,
+          align: "center",
+          color: "#7eff8e",
+          outlineColor: "#04060c"
+        });
+      }
+    }
+    refreshTopHud();
+  }
+
+  retryBtn.addEventListener("click", function () {
+    handleRetryButton();
+    retryBtn.blur();
+  });
+
+  titleBtn.addEventListener("click", function () {
+    goToTitle();
+    titleBtn.blur();
+  });
+
+  const KEY_MAP = {
+    ArrowUp: UP, KeyW: UP,
+    ArrowDown: DOWN, KeyS: DOWN,
+    ArrowLeft: LEFT, KeyA: LEFT,
+    ArrowRight: RIGHT, KeyD: RIGHT,
+    Space: HAMMER, KeyZ: HAMMER, KeyJ: HAMMER, Enter: HAMMER
+  };
+  const pressedKeys = new Set();
+
+  function recomputeKeys() {
+    let b = 0;
+    for (const code of pressedKeys) b |= KEY_MAP[code] || 0;
+    keyBits = b;
+  }
+
+  window.addEventListener("keydown", function (e) {
+    if (e.code === "Escape" && (appScreen === "select" || appScreen === "gameover" || appScreen === "ending")) {
+      e.preventDefault();
+      goToTitle();
+      return;
+    }
+    if (KEY_MAP[e.code]) {
+      e.preventDefault();
+      pressedKeys.add(e.code);
+      recomputeKeys();
+    }
+  });
+
+  window.addEventListener("keyup", function (e) {
+    if (KEY_MAP[e.code]) {
+      pressedKeys.delete(e.code);
+      recomputeKeys();
+    }
+  });
+
+  window.addEventListener("blur", function () {
+    pressedKeys.clear();
+    recomputeKeys();
+    nesPad.resetInputs();
+  });
+
+  const STEP_MS = 1000 / 60;
+  let lastTime = performance.now();
+  let acc = 0;
+
+  function loop(now) {
+    const dt = Math.min(100, now - lastTime);
+    lastTime = now;
+    acc += dt;
+    while (acc >= STEP_MS) {
+      acc -= STEP_MS;
+      if (appScreen === "playing") {
+        const restarted = stepPlayingFrame();
+        if (restarted) {
+          acc = 0;
+          break;
+        }
+      } else {
+        screenFrame += 1;
+        const rawBits = keyBits;
+        const edgeBits = rawBits & ~lastKeyBits;
+        lastKeyBits = rawBits;
+        handleMenuKeyEdges(edgeBits, rawBits);
+      }
+    }
+    if (appScreen === "playing") renderPlayingFrame();
+    else if (appScreen === "title") drawTitleScreen();
+    else if (appScreen === "select") drawSelectScreen();
+    else if (appScreen === "gameover") drawGameOverScreen();
+    else if (appScreen === "ending") drawEndingScreen();
+    requestAnimationFrame(loop);
+  }
+
+  renderButtonDotCanvas(retryCanvas, "RETRY", "#ffffff");
+  renderButtonDotCanvas(titleCanvas, "TITLE", "#ffffff");
+  setScreenMode("title");
+  requestAnimationFrame(loop);
+})();`;
+      }
+
+      function buildStandaloneDemoHtml(fileMap) {
+        const scriptClose = "\x3c/script>";
+        const scriptBlocks = SOURCE_FILES.map(path => {
+          const code = escapeScriptBody(fileMap[path] || "");
+          return "  <script>\n" + code + "\n  " + scriptClose;
+        }).join("\n");
+
+        const appCode = escapeScriptBody(getRuntimeAppScript());
+
+        const lines = [
+          "<!DOCTYPE html>",
+          '<html lang="en">',
+          "<head>",
+          '  <meta charset="UTF-8">',
+          '  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">',
+          "  <title>ROBOT BREAKER DEMO</title>",
+          "  <style>",
+          "    * { box-sizing: border-box; }",
+          "    html, body { margin: 0; padding: 0; background: #080b14; color: #ffffff; overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }",
+          "    body { padding: 6px 8px 14px; display: flex; flex-direction: column; align-items: center; gap: 6px; min-height: 100vh; }",
+          "    .top-hud { width: 100%; max-width: 512px; min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px; }",
+          "    .top-hud.hidden { display: none; }",
+          "    .hud-status { display: flex; align-items: center; flex-shrink: 0; }",
+          "    .hud-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }",
+          "    button.dot-btn { background: transparent !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; outline: none !important; padding: 4px 2px; margin: 0; cursor: pointer; appearance: none; -webkit-appearance: none; touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; display: inline-flex; align-items: center; justify-content: center; }",
+          "    button.dot-btn:active { transform: translateY(1px); opacity: 0.78; }",
+          "    canvas.dot-canvas { display: block; height: 18px; width: auto; image-rendering: pixelated; image-rendering: crisp-edges; pointer-events: none; }",
+          "    canvas#statusCanvas.dot-canvas { height: 20px; }",
+          "    .screen-wrap { width: 100%; max-width: 512px; background: #080b14; overflow: hidden; }",
+          "    canvas#gameCanvas { display: block; width: 100%; height: auto; image-rendering: pixelated; image-rendering: crisp-edges; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }",
+          "    .nes-controls-area { width: 100%; max-width: 512px; min-height: 176px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 10px 22px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }",
+          "    .nes-controls-area.hidden { display: none !important; }",
+          "    .nes-unit { position: relative; pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; flex-shrink: 0; }",
+          "    .nes-stick-unit { padding: 7px; border-radius: 14px; background: #c8ccd2; border: 3px solid #111215; box-shadow: inset 2px 2px 0 #eaedf2, inset -2px -2px 0 #848890, 0 5px 0 #111215, 0 8px 16px rgba(0,0,0,0.45); }",
+          "    .stick-base { position: relative; width: 136px; height: 136px; border-radius: 50%; background: radial-gradient(circle at 50% 45%, #373a42 0%, #24262c 74%, #181a1f 100%); border: 3px solid #111215; box-shadow: inset 0 4px 10px rgba(0,0,0,0.72), 0 1px 0 #eaedf2; touch-action: none; }",
+          "    .stick-cross-h, .stick-cross-v { position: absolute; background: rgba(255,255,255,0.08); pointer-events: none; }",
+          "    .stick-cross-h { left: 16%; right: 16%; top: 50%; height: 4px; margin-top: -2px; border-radius: 2px; }",
+          "    .stick-cross-v { top: 16%; bottom: 16%; left: 50%; width: 4px; margin-left: -2px; border-radius: 2px; }",
+          "    .nes-dir-mark { position: absolute; width: 0; height: 0; pointer-events: none; opacity: 0.42; transition: opacity 0.04s linear; }",
+          "    .nes-dir-u { top: 6px; left: 50%; margin-left: -6px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 8px solid #cfd3d9; }",
+          "    .nes-dir-d { bottom: 6px; left: 50%; margin-left: -6px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid #cfd3d9; }",
+          "    .nes-dir-l { left: 6px; top: 50%; margin-top: -6px; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-right: 8px solid #cfd3d9; }",
+          "    .nes-dir-r { right: 6px; top: 50%; margin-top: -6px; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 8px solid #cfd3d9; }",
+          "    .nes-stick-unit.dir-u .nes-dir-u { opacity: 1; border-bottom-color: #ff4b42; }",
+          "    .nes-stick-unit.dir-d .nes-dir-d { opacity: 1; border-top-color: #ff4b42; }",
+          "    .nes-stick-unit.dir-l .nes-dir-l { opacity: 1; border-right-color: #ff4b42; }",
+          "    .nes-stick-unit.dir-r .nes-dir-r { opacity: 1; border-left-color: #ff4b42; }",
+          "    .stick-knob { position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin-left: -28px; margin-top: -28px; border-radius: 50%; background: radial-gradient(circle at 38% 34%, #4c505a 0%, #23252b 58%, #121317 100%); border: 3px solid #0d0e12; box-shadow: inset 0 2px 3px rgba(255,255,255,0.22), inset 0 -3px 6px rgba(0,0,0,0.7), 0 4px 8px rgba(0,0,0,0.65); pointer-events: none; }",
+          "    .stick-knob::after { content: ''; position: absolute; left: 22%; top: 22%; right: 22%; bottom: 22%; border-radius: 50%; border: 2px solid rgba(255,255,255,0.12); background: radial-gradient(circle at 60% 65%, #2d3038 0%, #15171c 80%); }",
+          "    .nes-hammer-unit { padding: 9px; border-radius: 14px; background: #c8ccd2; border: 3px solid #111215; box-shadow: inset 2px 2px 0 #eaedf2, inset -2px -2px 0 #848890, 0 5px 0 #111215, 0 8px 16px rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; cursor: pointer; }",
+          "    .nes-hammer-btn { width: 96px; height: 96px; border-radius: 50%; background: radial-gradient(circle at 36% 30%, #ff5c52 0%, #de241b 55%, #9d130d 100%); border: 3px solid #111215; box-shadow: inset 0 3px 0 rgba(255,255,255,0.34), 0 4px 0 #5b0905; display: flex; align-items: center; justify-content: center; padding: 0; margin: 0; pointer-events: none; transform: translateY(-1px); transition: transform 0.04s linear, box-shadow 0.04s linear; }",
+          "    .nes-hammer-btn.pressed { transform: translateY(3px); background: radial-gradient(circle at 42% 40%, #ff736a 0%, #c91e16 60%, #860e09 100%); box-shadow: inset 0 2px 4px rgba(0,0,0,0.35), 0 1px 0 #5b0905; }",
+          "    .nes-hammer-svg { width: 66%; height: 66%; display: block; pointer-events: none; filter: drop-shadow(0 2px 0 rgba(70,8,5,0.65)); }",
+          "    @media (max-width: 340px) { .stick-base { width: 116px; height: 116px; } .stick-knob { width: 48px; height: 48px; margin-left: -24px; margin-top: -24px; } .nes-hammer-btn { width: 84px; height: 84px; } }",
+          "  </style>",
+          "</head>",
+          "<body>",
+          '  <div id="topHud" class="top-hud hidden">',
+          '    <div class="hud-status"><canvas id="statusCanvas" class="dot-canvas" width="128" height="20"></canvas></div>',
+          '    <div class="hud-actions">',
+          '      <button id="retryBtn" class="dot-btn" type="button" aria-label="RETRY"><canvas id="retryCanvas" class="dot-canvas" width="84" height="18"></canvas></button>',
+          '      <button id="titleBtn" class="dot-btn" type="button" aria-label="TITLE"><canvas id="titleCanvas" class="dot-canvas" width="84" height="18"></canvas></button>',
+          "    </div>",
+          "  </div>",
+          '  <div id="screenWrap" class="screen-wrap"><canvas id="gameCanvas" width="256" height="240"></canvas></div>',
+          '  <div id="controlsArea" class="nes-controls-area hidden">',
+          '    <div id="stickUnit" class="nes-unit nes-stick-unit">',
+          '      <div id="stickBase" class="stick-base" aria-label="STICK">',
+          '        <div class="stick-cross-h"></div><div class="stick-cross-v"></div>',
+          '        <div class="nes-dir-mark nes-dir-u"></div><div class="nes-dir-mark nes-dir-d"></div>',
+          '        <div class="nes-dir-mark nes-dir-l"></div><div class="nes-dir-mark nes-dir-r"></div>',
+          '        <div id="stickKnob" class="stick-knob"></div>',
+          "      </div>",
+          "    </div>",
+          '    <div id="hammerUnit" class="nes-unit nes-hammer-unit">',
+          '      <button id="hammerBtn" class="nes-hammer-btn" type="button" aria-label="HAMMER"></button>',
+          "    </div>",
+          "  </div>",
+          scriptBlocks,
+          "  <script>\n" + appCode + "\n  " + scriptClose,
+          "</body>",
+          "</html>"
+        ];
+        return lines.join("\n");
+      }
+
+      function applyBuiltHtml(html, logLines) {
+        generatedHtml = html;
+        outputArea.value = html;
+        if (previewBlobUrl) {
+          URL.revokeObjectURL(previewBlobUrl);
+        }
+        const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+        previewBlobUrl = URL.createObjectURL(blob);
+        previewLink.href = previewBlobUrl;
+        previewLink.classList.remove("disabled");
+        downloadBtn.disabled = false;
+        copyBtn.disabled = false;
+        const kb = (blob.size / 1024).toFixed(1);
+        statusBox.classList.remove("err");
+        statusBox.textContent = "生成完了！ (" + SOURCE_FILES.length + "/" + SOURCE_FILES.length + " ファイル結合, サイズ " + kb + " KB)\nこのまま「ダウンロード」「コピー」「試遊」ができます。";
+        fileLog.textContent = logLines.join("\n");
+      }
+
+      async function buildFromFetch() {
+        statusBox.classList.remove("err");
+        statusBox.textContent = "リポジトリ内の最新ファイルを読み込み中...";
+        downloadBtn.disabled = true;
+        copyBtn.disabled = true;
+        previewLink.classList.add("disabled");
+        fallbackBox.classList.add("hidden");
+
+        const fileMap = {};
+        const logs = [];
+        try {
+          for (let i = 0; i < SOURCE_FILES.length; i++) {
+            const path = SOURCE_FILES[i];
+            const res = await fetch(path, { cache: "no-store" });
+            if (!res.ok) {
+              throw new Error("HTTP " + res.status + " (" + path + ")");
+            }
+            const text = await res.text();
+            fileMap[path] = text;
+            logs.push("[OK] " + path + " (" + text.length + " chars)");
+          }
+          const html = buildStandaloneDemoHtml(fileMap);
+          applyBuiltHtml(html, logs);
+        } catch (err) {
+          statusBox.classList.add("err");
+          statusBox.textContent =
+            "自動読み込みに失敗しました: " + (err && err.message ? err.message : String(err)) +
+            "\nGitHub Pages 上から開くか、下のファイル選択から19個の .js をまとめて選んでください。";
+          fallbackBox.classList.remove("hidden");
+          fileLog.textContent = logs.length ? logs.join("\n") : "読込失敗";
+        }
+      }
+
+      manualFileInput.addEventListener("change", async function () {
+        const files = Array.from(manualFileInput.files || []);
+        if (files.length === 0) return;
+        const byName = {};
+        for (let i = 0; i < files.length; i++) {
+          byName[files[i].name] = files[i];
+        }
+        const fileMap = {};
+        const logs = [];
+        const missing = [];
+        for (let i = 0; i < SOURCE_FILES.length; i++) {
+          const path = SOURCE_FILES[i];
+          const baseName = path.split("/").pop();
+          const f = byName[baseName];
+          if (!f) {
+            missing.push(path);
+          } else {
+            const text = await f.text();
+            fileMap[path] = text;
+            logs.push("[LOCAL] " + path + " (" + text.length + " chars)");
+          }
+        }
+        if (missing.length > 0) {
+          statusBox.classList.add("err");
+          statusBox.textContent = "不足ファイルがあります (" + missing.length + "本):\n" + missing.join("\n");
+          fileLog.textContent = logs.join("\n");
+          return;
+        }
+        const html = buildStandaloneDemoHtml(fileMap);
+        applyBuiltHtml(html, logs);
+      });
+
+      downloadBtn.addEventListener("click", function () {
+        if (!generatedHtml) return;
+        const blob = new Blob([generatedHtml], { type: "text/html;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "demo.html";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+      });
+
+      copyBtn.addEventListener("click", async function () {
+        if (!generatedHtml) return;
+        try {
+          await navigator.clipboard.writeText(generatedHtml);
+          const prev = copyBtn.textContent;
+          copyBtn.textContent = "コピー完了！";
+          setTimeout(() => { copyBtn.textContent = prev; }, 1400);
+        } catch (_) {
+          outputArea.focus();
+          outputArea.select();
+          try {
+            document.execCommand("copy");
+            const prev = copyBtn.textContent;
+            copyBtn.textContent = "コピー完了！";
+            setTimeout(() => { copyBtn.textContent = prev; }, 1400);
+          } catch (e) {
+            alert("下のテキスト欄を全選択してコピーしてください。");
+          }
+        }
+      });
+
+      reloadBtn.addEventListener("click", buildFromFetch);
+      buildFromFetch();
+    })();
+  </script>
+</body>
+</html>
