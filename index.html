@@ -17,6 +17,9 @@
       align-items: center;
       gap: 10px;
       overscroll-behavior: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
     }
     .topbar {
       width: 100%;
@@ -106,60 +109,7 @@
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      padding: 4px 12px;
-    }
-    .stick-base {
-      position: relative;
-      width: 132px;
-      height: 132px;
-      border-radius: 50%;
-      background: radial-gradient(circle, #252c3b 0%, #191e29 72%);
-      border: 2px solid #44516e;
-      touch-action: none;
-      user-select: none;
-      -webkit-user-select: none;
-      flex-shrink: 0;
-    }
-    .stick-cross-h, .stick-cross-v {
-      position: absolute;
-      background: rgba(255, 255, 255, 0.08);
-      pointer-events: none;
-    }
-    .stick-cross-h { left: 16px; right: 16px; top: 50%; height: 2px; margin-top: -1px; }
-    .stick-cross-v { top: 16px; bottom: 16px; left: 50%; width: 2px; margin-left: -1px; }
-    .stick-knob {
-      position: absolute;
-      left: 50%;
-      top: 50%;
-      width: 54px;
-      height: 54px;
-      margin-left: -27px;
-      margin-top: -27px;
-      border-radius: 50%;
-      background: radial-gradient(circle at 35% 35%, #6a8cff, #2f57c8);
-      border: 2px solid #9ab4ff;
-      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
-      pointer-events: none;
-    }
-    .action-btn {
-      width: 88px;
-      height: 88px;
-      border-radius: 50%;
-      background: radial-gradient(circle at 35% 35%, #ff6b5b, #b8281c);
-      border: 3px solid #ffa498;
-      color: #fff;
-      font-weight: bold;
-      font-size: 0.85rem;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-      touch-action: none;
-      user-select: none;
-      -webkit-user-select: none;
-      flex-shrink: 0;
-      padding: 0;
-    }
-    .action-btn.pressed {
-      transform: scale(0.93);
-      background: radial-gradient(circle at 35% 35%, #ff9587, #d63527);
+      padding: 14px 12px 24px;
     }
     .hud {
       width: 100%;
@@ -172,6 +122,8 @@
       line-height: 1.45;
       white-space: pre;
       overflow-x: auto;
+      user-select: text;
+      -webkit-user-select: text;
     }
     .hint {
       width: 100%;
@@ -187,6 +139,7 @@
     <div class="btn-row">
       <button id="soundBtn" type="button">音ON</button>
       <button id="battleBtn" type="button">バトル</button>
+      <button id="padConfigBtn" type="button">操作</button>
       <button id="resetBtn" type="button">リセット</button>
       <button id="devToggleBtn" type="button" aria-expanded="false">開発</button>
     </div>
@@ -238,7 +191,7 @@
     </div>
     <div id="hud" class="hud">読み込み中...</div>
     <div class="hint">
-      操作: 擬似スティック ＋ HAMMERボタン（iPhone/マウス） / 矢印・WASD ＋ Space・Z・J（PC）
+      操作: 擬似スティック ＋ ハンマーボタン（iPhone/マウス） / 矢印・WASD ＋ Space・Z・J（PC）
     </div>
   </div>
 
@@ -246,13 +199,13 @@
     <canvas id="gameCanvas" width="256" height="240"></canvas>
   </div>
 
-  <div class="controls-area">
+  <div id="controlsArea" class="controls-area">
     <div id="stickBase" class="stick-base" aria-label="擬似スティック">
       <div class="stick-cross-h"></div>
       <div class="stick-cross-v"></div>
       <div id="stickKnob" class="stick-knob"></div>
     </div>
-    <button id="hammerBtn" class="action-btn" type="button" aria-label="ハンマー">HAMMER</button>
+    <button id="hammerBtn" class="action-btn" type="button" aria-label="ハンマー"></button>
   </div>
 
   <script src="./src/constants.js"></script>
@@ -280,6 +233,7 @@
   <script src="./data/stages_21_30.js"></script>
   <script src="./data/stages_31_40.js"></script>
   <script src="./data/stages_41_50.js"></script>
+  <script src="./src/touch_controller.js"></script>
   <script>
     (function () {
       const { RIGHT, LEFT, DOWN, UP, HAMMER, GameWorld, generateBattleStage } = window.BreakerGame;
@@ -309,6 +263,7 @@
       const stageBadge = document.getElementById("stageBadge");
       const soundBtn = document.getElementById("soundBtn");
       const battleBtn = document.getElementById("battleBtn");
+      const padConfigBtn = document.getElementById("padConfigBtn");
       const devToggleBtn = document.getElementById("devToggleBtn");
       const devPanel = document.getElementById("devPanel");
       const modeSelect = document.getElementById("modeSelect");
@@ -320,16 +275,11 @@
       const resetBtn = document.getElementById("resetBtn");
       const pauseBtn = document.getElementById("pauseBtn");
       const stepBtn = document.getElementById("stepBtn");
-      const hammerBtn = document.getElementById("hammerBtn");
       const hudEl = document.getElementById("hud");
-      const stickBase = document.getElementById("stickBase");
-      const stickKnob = document.getElementById("stickKnob");
 
       let world = null;
       let paused = false;
-      let stickBits = 0;
       let keyBits = 0;
-      let hammerBtnDown = false;
       let activeEntries = [];
       let lastNonBattleMode = "normal";
       let resultHammerWaitPrev = false;
@@ -356,6 +306,15 @@
       });
       window.addEventListener("pageshow", handleAppAudioReturn);
       window.addEventListener("focus", handleAppAudioReturn);
+
+      const touchController = window.BreakerTouchController.create({
+        controlsArea: document.getElementById("controlsArea"),
+        stickBase: document.getElementById("stickBase"),
+        stickKnob: document.getElementById("stickKnob"),
+        hammerBtn: document.getElementById("hammerBtn"),
+        toggleBtn: padConfigBtn,
+        onUnlockAudio: unlockAudio
+      });
 
       function updateSoundButtonUI() {
         if (!soundEngine) {
@@ -547,7 +506,7 @@
       }
 
       function currentBits() {
-        let b = stickBits | keyBits | (hammerBtnDown ? HAMMER : 0);
+        let b = touchController.getBits() | keyBits;
         if ((b & (LEFT | RIGHT)) === (LEFT | RIGHT)) {
           b &= ~(LEFT | RIGHT);
         }
@@ -689,91 +648,6 @@
         }
       }
 
-      // 擬似スティック（4方向優先・デッドゾーン付き）
-      let activePointerId = null;
-      const MAX_R = 40;
-      const DEAD_R = 13;
-
-      function updateStickFromPoint(clientX, clientY) {
-        const rect = stickBase.getBoundingClientRect();
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        let dx = clientX - cx;
-        let dy = clientY - cy;
-        const dist = Math.hypot(dx, dy);
-        if (dist > MAX_R) {
-          dx = (dx / dist) * MAX_R;
-          dy = (dy / dist) * MAX_R;
-        }
-        stickKnob.style.transform = "translate(" + dx.toFixed(1) + "px, " + dy.toFixed(1) + "px)";
-
-        if (dist < DEAD_R) {
-          stickBits = 0;
-        } else if (Math.abs(dx) >= Math.abs(dy)) {
-          stickBits = dx > 0 ? RIGHT : LEFT;
-        } else {
-          stickBits = dy > 0 ? DOWN : UP;
-        }
-      }
-
-      function resetStick() {
-        activePointerId = null;
-        stickBits = 0;
-        stickKnob.style.transform = "translate(0px, 0px)";
-      }
-
-      stickBase.addEventListener("pointerdown", function (e) {
-        e.preventDefault();
-        unlockAudio();
-        activePointerId = e.pointerId;
-        if (stickBase.setPointerCapture) {
-          try { stickBase.setPointerCapture(e.pointerId); } catch (_) {}
-        }
-        updateStickFromPoint(e.clientX, e.clientY);
-      });
-
-      stickBase.addEventListener("pointermove", function (e) {
-        if (e.pointerId !== activePointerId) return;
-        e.preventDefault();
-        updateStickFromPoint(e.clientX, e.clientY);
-      });
-
-      stickBase.addEventListener("pointerup", function (e) {
-        if (e.pointerId === activePointerId) resetStick();
-      });
-      stickBase.addEventListener("pointercancel", function (e) {
-        if (e.pointerId === activePointerId) resetStick();
-      });
-
-      // ハンマーボタン（マルチタッチ対応）
-      let hammerPointerId = null;
-      function setHammerPressed(on) {
-        hammerBtnDown = on;
-        hammerBtn.classList.toggle("pressed", on);
-      }
-
-      hammerBtn.addEventListener("pointerdown", function (e) {
-        e.preventDefault();
-        unlockAudio();
-        hammerPointerId = e.pointerId;
-        if (hammerBtn.setPointerCapture) {
-          try { hammerBtn.setPointerCapture(e.pointerId); } catch (_) {}
-        }
-        setHammerPressed(true);
-      });
-      hammerBtn.addEventListener("pointerup", function (e) {
-        if (e.pointerId === hammerPointerId) {
-          hammerPointerId = null;
-          setHammerPressed(false);
-        }
-      });
-      hammerBtn.addEventListener("pointercancel", function (e) {
-        if (e.pointerId === hammerPointerId) {
-          hammerPointerId = null;
-          setHammerPressed(false);
-        }
-      });
-
       // PC キーボード
       const KEY_MAP = {
         ArrowUp: UP, KeyW: UP,
@@ -811,9 +685,7 @@
       window.addEventListener("blur", function () {
         pressedKeys.clear();
         recomputeKeys();
-        resetStick();
-        hammerPointerId = null;
-        setHammerPressed(false);
+        touchController.resetInputs();
       });
 
       soundBtn.addEventListener("click", function () {
