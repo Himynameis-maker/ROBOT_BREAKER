@@ -112,6 +112,7 @@
     }
 
     snapIfContLadderIdle(slot, world) {
+      if (slot.flag & 2) return;
       if (this.isLadderTileForSlot(slot, world.getTile(slot.row, slot.col)) &&
           this.isContinuousLadder(slot.row, slot.col, world)) {
         this.snapX(slot, world);
@@ -622,6 +623,19 @@
       const b = slot.bits;
 
       if (slot.state === 0) {
+        if ((slot.flag & 2) &&
+            slot.row < world.rows - 1 &&
+            !isSolidDrum(world.getTile(slot.row + 1, slot.col)) &&
+            this.isContinuousLadderSegment(slot.row, slot.col, world)) {
+          if (slot.isPlayer) {
+            this.snapX(slot, world);
+          }
+          slot.prom = slot.isPlayer ? 0 : 0x12;
+          slot.topY = slot.y;
+          slot.state = 5;
+          slot.shoeHoverTimer = 0;
+          return;
+        }
         if (this.tryStartHammer(slot, b, world)) return;
         if (this.tryEnterLadder(slot, b, world)) return;
         if (b & (LEFT | RIGHT)) {
